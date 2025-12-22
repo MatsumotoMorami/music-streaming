@@ -29,6 +29,7 @@ export default function LoginPage() {
         const data = await res.json();
         if (data && data.token) {
           localStorage.setItem('authToken', data.token);
+          try { window.dispatchEvent(new Event('auth-changed')); } catch(_) {}
         } else {
           const headerToken = res.headers.get('x-auth-token');
           if (headerToken) localStorage.setItem('authToken', headerToken);

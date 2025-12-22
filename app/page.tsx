@@ -4,25 +4,37 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 export default function Home() {
-  const [rooms, setRooms] = useState<{ id: string; members: number }[]>([]);
+  const [rooms, setRooms] = useState<{ id: string; members: number; joined?: boolean }[]>([]);
   const [newId, setNewId] = useState("");
   const router = useRouter();
 
-  async function fetchRooms() {
-    try {
-      const res = await fetch("http://localhost:4001/rooms");
-      if (!res.ok) return;
-      const data = await res.json();
-      setRooms(data);
-    } catch (e) {
-      console.warn("failed to fetch rooms", e);
-    }
-  }
-
   useEffect(() => {
-    fetchRooms();
-    const t = setInterval(fetchRooms, 3000);
-    return () => clearInterval(t);
+    let mounted = true;
+    (async () => {
+      const io = (await import('socket.io-client')).io;
+      const s = io('http://localhost:4000');
+      const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
+      s.on('connect', () => {
+        try { s.emit('subscribe-rooms', { token }); } catch (e) {}
+      });
+      s.on('rooms-list', (list: any[]) => { if (!mounted) return; setRooms(list); });
+      s.on('rooms-diff', ({ added = [], updated = [], removed = [] }: any) => {
+        if (!mounted) return;
+        setRooms((prev) => {
+          const map = new Map(prev.map((r) => [r.id, r]));
+          // removals
+          removed.forEach((id: string) => map.delete(id));
+          // updates
+          updated.forEach((r: any) => map.set(r.id, r));
+          // additions
+          added.forEach((r: any) => map.set(r.id, r));
+          return Array.from(map.values());
+        });
+      });
+      // keep socket reference in window for manual join page use
+      (window as any).__roomsSocket = s;
+    })();
+    return () => { mounted = false; try { const s = (window as any).__roomsSocket; if (s) { try { s.emit('unsubscribe-rooms'); } catch(_){} s.disconnect(); } } catch(_){} };
   }, []);
 
   function createRoom() {
@@ -64,7 +76,9 @@ export default function Home() {
                   <div className="text-sm text-zinc-600">{r.members} 人在线</div>
                 </div>
                 <div>
-                  <button onClick={() => goToRoom(r.id)} className="px-3 py-1 bg-blue-600 text-white rounded">加入</button>
+                  <button disabled={!!r.joined} onClick={() => goToRoom(r.id)} className={`px-3 py-1 ${r.joined ? 'bg-gray-300' : 'bg-blue-600'} text-white rounded`}>
+                    {r.joined ? '已在房间' : '加入'}
+                  </button>
                 </div>
               </li>
             ))}

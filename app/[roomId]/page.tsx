@@ -22,9 +22,10 @@ export default function RoomPage() {
 
   useEffect(() => {
     let mounted = true;
+    let s: any = null;
     (async () => {
       const io = (await import("socket.io-client")).io;
-      const s = io("http://localhost:4000");
+      s = io("http://localhost:4000");
       if (!mounted) return;
       setSocket(s);
 
@@ -83,11 +84,27 @@ export default function RoomPage() {
           audioRef.current?.pause();
         }
       });
+
+      // respond to server heartbeat so room liveness can be tracked
+      s.on('heartbeat', (data: { ts?: number }) => {
+        try { s.emit('heartbeat-pong', { ts: data?.ts || Date.now() }); } catch (e) {}
+      });
+      // server may return join-error if account already in room
+      s.on('join-error', (err: { code?: string; message?: string }) => {
+        try { alert(err?.message || '加入被拒绝'); } catch (_) {}
+      });
     })();
 
     return () => {
       mounted = false;
-      if (socket) socket.disconnect();
+      try {
+        if (s) {
+          if (joined) {
+            try { s.emit('leave-room', { roomId }); } catch (e) {}
+          }
+          s.disconnect();
+        }
+      } catch (_) {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -95,18 +112,54 @@ export default function RoomPage() {
   // Auto-join when socket is ready and not yet joined
   useEffect(() => {
     if (socket && !joined) {
-      const autoName = "Guest-" + Math.random().toString(36).slice(2, 6);
+      let autoName = "Guest-" + Math.random().toString(36).slice(2, 6);
+      try {
+        const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
+        if (token) {
+          try {
+            const parts = token.split('.');
+            if (parts.length === 3) {
+              const payload = JSON.parse(decodeURIComponent(escape(window.atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))));
+              if (payload && payload.email) {
+                autoName = payload.email.split('@')[0];
+              }
+            }
+          } catch (_) {}
+        }
+      } catch (_) {}
       setName(autoName);
-      socket.emit("join-room", { roomId, name: autoName });
-      setJoined(true);
+      try {
+        const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
+        socket.emit("join-room", { roomId, name: autoName, token }, (resp: any) => {
+          if (resp && resp.ok) setJoined(true);
+          else {
+            try { alert(resp?.message || '无法加入房间'); } catch (_) {}
+            setJoined(false);
+          }
+        });
+      } catch (e) {
+        socket.emit("join-room", { roomId, name: autoName });
+        setJoined(true);
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket]);
 
   function joinRoom() {
     if (!socket || !roomId) return;
-    socket.emit("join-room", { roomId, name: name || "Anonymous" });
-    setJoined(true);
+    try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
+      socket.emit("join-room", { roomId, name: name || "Anonymous", token }, (resp: any) => {
+        if (resp && resp.ok) setJoined(true);
+        else {
+          try { alert(resp?.message || '无法加入房间'); } catch (_) {}
+          setJoined(false);
+        }
+      });
+    } catch (e) {
+      socket.emit("join-room", { roomId, name: name || "Anonymous" });
+      setJoined(true);
+    }
   }
 
   function setTrack() {

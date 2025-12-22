@@ -31,7 +31,7 @@ export default function RootLayout({
       >
         <header className="w-full border-b bg-white/50">
           <div className="mx-auto max-w-6xl flex items-center justify-between px-6 py-3">
-            <div className="text-lg font-semibold">共享音乐</div>
+            <a className="text-lg font-semibold" href="/">共享音乐</a>
             <Header />
           </div>
         </header>
