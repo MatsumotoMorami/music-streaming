@@ -17,6 +17,19 @@ export default function RoomPage() {
 
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
+  const [playlist, setPlaylist] = useState<Array<any>>([]);
+  const [newTrackUrl, setNewTrackUrl] = useState('');
+  const [newTrackTitle, setNewTrackTitle] = useState('');
+  const [playMode, setPlayMode] = useState<'single'|'sequence'|'loop'|'shuffle'>('sequence');
+  const [currentIndex, setCurrentIndex] = useState<number>(-1);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<Array<any>>([]);
+  const [searching, setSearching] = useState(false);
+  const [roomPassword, setRoomPassword] = useState('');
+  const [showPasswordPrompt, setShowPasswordPrompt] = useState(false);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [createVisibility, setCreateVisibility] = useState<'public'|'private'>('public');
+  const [createPassword, setCreatePassword] = useState('');
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -59,8 +72,9 @@ export default function RoomPage() {
         setCurrentTime(currentTime || 0);
       });
 
-      s.on('room-state', (state: { url: string | null; playing: boolean; currentTime: number; updatedAt?: number }) => {
+      s.on('room-state', (state: { url: string | null; playing: boolean; currentTime: number; updatedAt?: number; currentIndex?: number }) => {
         if (!state) return;
+        if (typeof state.currentIndex === 'number') setCurrentIndex(state.currentIndex);
         const serverUpdated = state.updatedAt || Date.now();
         const now = Date.now();
         const deltaSec = Math.max(0, (now - serverUpdated) / 1000);
@@ -85,6 +99,13 @@ export default function RoomPage() {
         }
       });
 
+      s.on('playlist-updated', (list: any[]) => {
+        try { setPlaylist(list || []); } catch (_) {}
+      });
+      s.on('play-mode', (mode: string) => {
+        try { if (mode) setPlayMode(mode as any); } catch (_) {}
+      });
+
       // respond to server heartbeat so room liveness can be tracked
       s.on('heartbeat', (data: { ts?: number }) => {
         try { s.emit('heartbeat-pong', { ts: data?.ts || Date.now() }); } catch (e) {}
@@ -93,6 +114,52 @@ export default function RoomPage() {
       s.on('join-error', (err: { code?: string; message?: string }) => {
         try { alert(err?.message || '加入被拒绝'); } catch (_) {}
       });
+
+      // Auto-join: try to join immediately when opening a room page.
+      // If the server requires a password, show the password prompt; otherwise navigate once joined.
+      try {
+        const createKey = `room_create:${roomId}`;
+        const joinKey = `room_join:${roomId}`;
+        const storedCreate = typeof window !== 'undefined' ? sessionStorage.getItem(createKey) : null;
+        const storedJoin = typeof window !== 'undefined' ? sessionStorage.getItem(joinKey) : null;
+        const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
+        // derive a display name from token if available
+        let autoName = 'Guest-' + Math.random().toString(36).slice(2, 6);
+        try {
+          if (token) {
+            const parts = token.split('.');
+            if (parts.length === 3) {
+              const payload = JSON.parse(decodeURIComponent(escape(window.atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))));
+              if (payload && payload.email) autoName = payload.email.split('@')[0];
+            }
+          }
+        } catch (_) {}
+
+        const joinPayload: any = { roomId, name: autoName, token };
+        // prefer join intent (from homepage join modal) over create intent
+        const prefer = storedJoin || storedCreate;
+        if (prefer) {
+          try {
+            const payload = JSON.parse(prefer || '{}');
+            if (payload.visibility) joinPayload.visibility = payload.visibility;
+            if (payload.password) joinPayload.password = payload.password;
+          } catch (_) {}
+        }
+
+        s.emit('join-room', joinPayload, (resp: any) => {
+          try { if (storedJoin) sessionStorage.removeItem(joinKey); if (storedCreate) sessionStorage.removeItem(createKey); } catch (e) {}
+          if (resp && resp.ok) {
+            setJoined(true);
+            setShowCreateForm(false);
+          } else {
+            if (resp && resp.code === 'password-required') {
+              setShowPasswordPrompt(true);
+            } else {
+              try { alert(resp?.message || '无法加入房间'); } catch (_) {}
+            }
+          }
+        });
+      } catch (e) {}
     })();
 
     return () => {
@@ -109,7 +176,8 @@ export default function RoomPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-join when socket is ready and not yet joined
+  // When socket connects, set a default name but DO NOT auto-join.
+  // Joining (and creating a private room) must be explicit so the user can choose visibility/password.
   useEffect(() => {
     if (socket && !joined) {
       let autoName = "Guest-" + Math.random().toString(36).slice(2, 6);
@@ -128,19 +196,6 @@ export default function RoomPage() {
         }
       } catch (_) {}
       setName(autoName);
-      try {
-        const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
-        socket.emit("join-room", { roomId, name: autoName, token }, (resp: any) => {
-          if (resp && resp.ok) setJoined(true);
-          else {
-            try { alert(resp?.message || '无法加入房间'); } catch (_) {}
-            setJoined(false);
-          }
-        });
-      } catch (e) {
-        socket.emit("join-room", { roomId, name: autoName });
-        setJoined(true);
-      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [socket]);
@@ -149,16 +204,44 @@ export default function RoomPage() {
     if (!socket || !roomId) return;
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
-      socket.emit("join-room", { roomId, name: name || "Anonymous", token }, (resp: any) => {
-        if (resp && resp.ok) setJoined(true);
-        else {
-          try { alert(resp?.message || '无法加入房间'); } catch (_) {}
+      socket.emit("join-room", { roomId, name: name || "Anonymous", token, password: roomPassword || undefined }, (resp: any) => {
+        if (resp && resp.ok) {
+          setJoined(true);
+          setShowPasswordPrompt(false);
+        } else {
+          if (resp && resp.code === 'password-required') {
+            // server indicates room is private or password missing/incorrect
+            setShowPasswordPrompt(true);
+            try { alert(resp?.message || '此房间需要密码'); } catch (_) {}
+          } else {
+            try { alert(resp?.message || '无法加入房间'); } catch (_) {}
+          }
           setJoined(false);
         }
       });
     } catch (e) {
-      socket.emit("join-room", { roomId, name: name || "Anonymous" });
+      socket.emit("join-room", { roomId, name: name || "Anonymous", password: roomPassword || undefined });
       setJoined(true);
+    }
+  }
+
+  // Explicitly create a room (choose visibility and password) then join it
+  function createRoom() {
+    if (!socket || !roomId) return;
+    try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
+      socket.emit('join-room', { roomId, name: name || 'Anonymous', token, visibility: createVisibility, password: createVisibility === 'private' ? createPassword : undefined }, (resp: any) => {
+        if (resp && resp.ok) {
+          setJoined(true);
+          setShowCreateForm(false);
+        } else {
+          try { alert(resp?.message || '无法创建房间'); } catch (_) {}
+        }
+      });
+    } catch (e) {
+      socket.emit('join-room', { roomId, name: name || 'Anonymous', visibility: createVisibility, password: createVisibility === 'private' ? createPassword : undefined });
+      setJoined(true);
+      setShowCreateForm(false);
     }
   }
 
@@ -168,6 +251,102 @@ export default function RoomPage() {
     if (audioRef.current) {
       audioRef.current.src = trackUrl;
       audioRef.current.currentTime = 0;
+    }
+  }
+
+  function addTrack() {
+    if (!socket || !joined) return;
+    const url = newTrackUrl.trim();
+    const title = newTrackTitle.trim();
+    if (!url) return;
+    socket.emit('playlist-add', { url, title }, (resp: any) => {
+      if (resp && resp.ok) {
+        setNewTrackUrl(''); setNewTrackTitle('');
+      } else {
+        try { alert(resp?.message || '添加失败'); } catch (_) {}
+      }
+    });
+  }
+
+  async function doSearch() {
+    if (!searchQuery || !searchQuery.trim()) return;
+    setSearching(true);
+    try {
+      const res = await fetch(`http://localhost:4001/api/search?q=${encodeURIComponent(searchQuery)}`);
+      if (!res.ok) { setSearchResults([]); setSearching(false); return; }
+      const data = await res.json();
+      setSearchResults(data.list || []);
+    } catch (e) {
+      setSearchResults([]);
+    }
+    setSearching(false);
+  }
+
+  function removeTrack(id: string) {
+    if (!socket || !joined) return;
+    socket.emit('playlist-remove', { id }, (resp: any) => {
+      if (!resp || !resp.ok) {
+        try { alert(resp?.message || '删除失败'); } catch (_) {}
+      }
+    });
+  }
+
+  function playFromPlaylist(item: any, idx: number) {
+    if (!socket || !joined) return;
+    socket.emit('set-current-index', idx, (resp: any) => {
+      if (!resp || !resp.ok) try { alert(resp?.message || '无法播放'); } catch(_) {}
+    });
+  }
+
+  function goNext() {
+    if (!socket || !joined) return;
+    socket.emit('playlist-next');
+  }
+
+  function goPrev() {
+    if (!socket || !joined) return;
+    socket.emit('playlist-prev');
+  }
+
+  function handleEnded() {
+    // If we're joined to a room, let the server decide the next track
+    if (socket && joined) {
+      try { socket.emit('playlist-next'); } catch (_) {}
+      return;
+    }
+
+    // Fallback local behavior when not joined to a room
+    if (!playlist || playlist.length === 0) return;
+    const idx = playlist.findIndex((p) => p.url === trackUrl);
+    const len = playlist.length;
+    if (playMode === 'single') {
+      try { audioRef.current!.currentTime = 0; audioRef.current!.play().catch(() => {}); } catch (_) {}
+      return;
+    }
+    let nextIdx = -1;
+    if (playMode === 'sequence') {
+      nextIdx = idx >= 0 ? idx + 1 : 0;
+      if (!(nextIdx < len)) return;
+    } else if (playMode === 'loop') {
+      nextIdx = idx >= 0 ? (idx + 1) % len : 0;
+    } else if (playMode === 'shuffle') {
+      if (len === 1) nextIdx = 0;
+      else {
+        nextIdx = Math.floor(Math.random() * len);
+        if (idx >= 0 && nextIdx === idx) nextIdx = (nextIdx + 1) % len;
+      }
+    }
+
+    if (nextIdx >= 0 && nextIdx < len) {
+      const item = playlist[nextIdx];
+      try {
+        setTrackUrl(item.url);
+        if (audioRef.current) {
+          audioRef.current.src = item.url;
+          audioRef.current.currentTime = 0;
+          audioRef.current.play().catch(() => {});
+        }
+      } catch (_) {}
     }
   }
 
@@ -199,8 +378,47 @@ export default function RoomPage() {
         {!joined ? (
           <div className="space-y-3">
             <div>
-              <label className="block text-sm">你的名字</label>
-              <input value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full border p-2" />
+              <div className="text-sm text-zinc-600">加入时的显示名</div>
+              <div className="font-medium">{name || 'Guest'}</div>
+            </div>
+
+            <div>
+              <div className="flex gap-2">
+                <button onClick={joinRoom} className="px-3 bg-blue-600 text-white">加入房间 {roomId}</button>
+                <button onClick={() => setShowCreateForm((v) => !v)} className="px-3 bg-emerald-600 text-white">创建房间</button>
+              </div>
+
+              {showCreateForm && (
+                <div className="mt-3 p-3 border rounded">
+                  <div>
+                    <label className="block text-sm">可见性</label>
+                    <select value={createVisibility} onChange={(e) => setCreateVisibility(e.target.value as any)} className="mt-1 border p-2">
+                      <option value="public">公开</option>
+                      <option value="private">私密（需要密码）</option>
+                    </select>
+                  </div>
+                  {createVisibility === 'private' && (
+                    <div className="mt-2">
+                      <label className="block text-sm">房间密码</label>
+                      <input type="password" placeholder="设置房间密码" value={createPassword} onChange={(e) => setCreatePassword(e.target.value)} className="mt-1 w-full border p-2" />
+                    </div>
+                  )}
+                  <div className="mt-3 flex gap-2">
+                    <button onClick={createRoom} className="px-3 bg-indigo-600 text-white">创建并加入</button>
+                    <button onClick={() => setShowCreateForm(false)} className="px-3 bg-gray-200">取消</button>
+                  </div>
+                </div>
+              )}
+
+              {showPasswordPrompt ? (
+                <div className="mt-3">
+                  <label className="block text-sm">此房间为私密房间，请输入密码</label>
+                  <div className="flex gap-2 mt-1">
+                    <input type="password" placeholder="房间密码" value={roomPassword} onChange={(e) => setRoomPassword(e.target.value)} className="flex-1 border p-2" />
+                    <button onClick={joinRoom} className="px-3 bg-blue-600 text-white">提交密码并加入</button>
+                  </div>
+                </div>
+              ) : null}
             </div>
 
             <div>
@@ -232,9 +450,25 @@ export default function RoomPage() {
               </div>
             </div>
 
+            <div className="flex items-center gap-4">
+              <div className="text-sm">播放模式</div>
+              <select disabled={!joined} value={playMode} onChange={(e) => {
+                const v = e.target.value as any;
+                setPlayMode(v);
+                try { socket?.emit('set-play-mode', v); } catch (_) {}
+              }} className="border p-2">
+                <option value="single">单曲循环</option>
+                <option value="sequence">顺序播放</option>
+                <option value="loop">按顺序循环</option>
+                <option value="shuffle">随机播放</option>
+              </select>
+            </div>
+
             <div className="flex items-center gap-2">
               <button onClick={handlePlay} className="px-3 py-2 bg-blue-600 text-white">播放</button>
               <button onClick={handlePause} className="px-3 py-2 bg-gray-300">暂停</button>
+              <button onClick={goPrev} className="px-3 py-2 bg-indigo-500 text-white">上一首</button>
+              <button onClick={goNext} className="px-3 py-2 bg-indigo-500 text-white">下一首</button>
               <div className="flex-1">
                 <input
                   type="range"
@@ -262,10 +496,62 @@ export default function RoomPage() {
               </ul>
             </div>
 
+            <div>
+              <div className="text-sm font-medium">房间歌单</div>
+              <div className="mt-2 space-y-2">
+                <div className="flex gap-2">
+                  <input placeholder="音频 URL" value={newTrackUrl} onChange={(e) => setNewTrackUrl(e.target.value)} className="flex-1 border p-2" />
+                  <input placeholder="标题（可选）" value={newTrackTitle} onChange={(e) => setNewTrackTitle(e.target.value)} className="w-48 border p-2" />
+                  <button disabled={!joined} onClick={addTrack} className="px-3 bg-indigo-600 text-white">添加</button>
+                </div>
+
+                <div className="mt-2">
+                  <div className="flex gap-2">
+                    <input placeholder="搜索网易云曲目（关键词）" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="flex-1 border p-2" />
+                    <button onClick={doSearch} disabled={searching} className="px-3 bg-emerald-600 text-white">搜索</button>
+                  </div>
+                  <div className="mt-2">
+                    {searching && <div className="text-sm text-zinc-600">搜索中...</div>}
+                    {!searching && searchResults.length > 0 && (
+                      <ul className="divide-y">
+                        {searchResults.map((r, i) => (
+                          <li key={r.id || i} className="p-2 flex items-center justify-between">
+                            <div>
+                              <div className="font-medium">{r.name} — {r.artists}</div>
+                              <div className="text-sm text-zinc-600">{r.album}</div>
+                            </div>
+                            <div>
+                              <button disabled={!joined} onClick={() => { if (socket && joined) socket.emit('playlist-add', { url: r.src, title: `${r.name} — ${r.artists}` }); }} className="px-3 py-1 bg-blue-600 text-white rounded">添加</button>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+                <ul className="mt-2 divide-y">
+                  {playlist.length === 0 && <li className="p-2 text-sm text-zinc-600">歌单为空</li>}
+                  {playlist.map((it, idx) => (
+                    <li key={it.id || idx} className={`p-2 flex items-center justify-between ${currentIndex === idx ? 'bg-yellow-50' : ''}`}>
+                      <div>
+                        <div className="font-medium">{it.title || it.url}</div>
+                        <div className="text-sm text-zinc-600">{it.addedBy} • {new Date(it.ts || Date.now()).toLocaleString()}</div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button onClick={() => playFromPlaylist(it, idx)} className="px-2 py-1 bg-green-600 text-white rounded">播放</button>
+                        <button onClick={() => removeTrack(it.id)} className="px-2 py-1 bg-red-600 text-white rounded">删除</button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+
             <audio
               ref={audioRef}
               src={trackUrl}
               className="w-full mt-4"
+              onEnded={handleEnded}
               onLoadedMetadata={() => setDuration(audioRef.current?.duration || 0)}
               onTimeUpdate={() => setCurrentTime(audioRef.current?.currentTime || 0)}
             />

@@ -80,7 +80,7 @@ function sendRoomsToSocket(s) {
         const sock = io.sockets.sockets.get(sid);
         if (sock && sock.connected && sock.data && sock.data.lastSeen && (now - sock.data.lastSeen) < 5000) active++;
       }
-      return { id, members: active, url: room.state?.url || null, playing: room.state?.playing || false, joined: !!(email && room.byEmail && room.byEmail[email]) };
+      return { id, members: active, url: room.state?.url || null, playing: room.state?.playing || false, joined: !!(email && room.byEmail && room.byEmail[email]), visibility: room.visibility || 'public' };
     }).filter((r) => r.members > 0);
     // diff against previous snapshot stored on the socket
     const prevMap = s.data.roomsSnapshot || {};
@@ -172,8 +172,8 @@ io.on('connection', (socket) => {
     broadcastRoomsToSubscribers();
   });
 
-  socket.on('join-room', (payload = {}, cb) => {
-    const { roomId, name, token } = payload || {};
+  socket.on('join-room', async (payload = {}, cb) => {
+    const { roomId, name, token, visibility, password } = payload || {};
     currentRoom = roomId;
     // verify token if provided to enforce one-account-per-room
     let accountEmail = null;
@@ -187,7 +187,51 @@ io.on('connection', (socket) => {
     }
 
     if (!rooms[roomId]) {
-      rooms[roomId] = { members: {}, byEmail: {}, state: { url: null, playing: false, currentTime: 0, updatedAt: Date.now() } };
+      // try to load from DB
+      let persisted = null;
+      try { persisted = await prisma.room.findUnique({ where: { id: roomId } }); } catch (e) { persisted = null; }
+      rooms[roomId] = { members: {}, byEmail: {}, playlist: [], visibility: 'public', passwordHash: null, state: { url: null, playing: false, currentTime: 0, updatedAt: Date.now(), playMode: 'sequence', currentIndex: 0 } };
+      // if creator passed visibility/password, set them (hashing password)
+      try {
+        if (visibility === 'private' && password) {
+          const hash = await bcrypt.hash(String(password), 10);
+          rooms[roomId].visibility = 'private';
+          rooms[roomId].passwordHash = hash;
+        } else {
+          rooms[roomId].visibility = 'public';
+          rooms[roomId].passwordHash = null;
+        }
+      } catch (e) {
+        rooms[roomId].visibility = 'public';
+        rooms[roomId].passwordHash = null;
+      }
+      if (persisted) {
+        try {
+          rooms[roomId].playlist = Array.isArray(persisted.playlist) ? persisted.playlist : (persisted.playlist ? JSON.parse(String(persisted.playlist)) : []);
+        } catch (_) { try { rooms[roomId].playlist = persisted.playlist ? JSON.parse(String(persisted.playlist)) : []; } catch (__){ rooms[roomId].playlist = []; } }
+        rooms[roomId].state.playMode = persisted.playMode || rooms[roomId].state.playMode;
+        rooms[roomId].state.currentIndex = typeof persisted.currentIndex === 'number' ? persisted.currentIndex : 0;
+        const idx = rooms[roomId].state.currentIndex || 0;
+        if (rooms[roomId].playlist && rooms[roomId].playlist[idx]) rooms[roomId].state.url = rooms[roomId].playlist[idx].url;
+      }
+    }
+
+    // If room exists and is private, validate provided password (unless creator just created it above with password)
+    if (rooms[roomId] && rooms[roomId].visibility === 'private') {
+      const provided = password || null;
+      // allow join if socket has an authenticated account that matches a stored byEmail member (auth bypass not allowed)
+      let okPwd = false;
+      try {
+        if (rooms[roomId].passwordHash && provided) {
+          okPwd = await bcrypt.compare(String(provided), rooms[roomId].passwordHash);
+        }
+      } catch (e) { okPwd = false; }
+      if (!okPwd) {
+        const err = { ok: false, code: 'password-required', message: '此房间为私密房间，需要正确密码才能加入' };
+        if (typeof cb === 'function') try { cb(err); } catch (__) {}
+        else socket.emit('join-error', err);
+        return;
+      }
     }
 
     // if accountEmail exists and already joined, reject the new join
@@ -214,6 +258,9 @@ io.on('connection', (socket) => {
 
     // send current room state to the newly joined socket only
     socket.emit('room-state', rooms[roomId].state);
+    // send current playlist and play mode as well
+    try { socket.emit('playlist-updated', rooms[roomId].playlist || []); } catch (__) {}
+    try { socket.emit('play-mode', rooms[roomId].state.playMode || 'sequence'); } catch (__) {}
     if (typeof cb === 'function') try { cb({ ok: true }); } catch (__) {}
     // notify rooms subscribers
     broadcastRoomsToSubscribers();
@@ -258,6 +305,136 @@ io.on('connection', (socket) => {
       rooms[currentRoom].state.updatedAt = Date.now();
     }
     socket.to(currentRoom).emit('set-track', payload);
+  });
+
+  // Playlist management
+  socket.on('playlist-add', async (track, cb) => {
+    if (!currentRoom) return;
+    try {
+      if (!track || !track.url) {
+        if (typeof cb === 'function') cb({ ok: false, message: 'missing url' });
+        return;
+      }
+      const item = { id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,6)}`, url: track.url, title: track.title || '', addedBy: socket.data.name || 'Anonymous', ts: Date.now() };
+      rooms[currentRoom].playlist = rooms[currentRoom].playlist || [];
+      rooms[currentRoom].playlist.push(item);
+      // persist to DB
+      try { await prisma.room.upsert({ where: { id: currentRoom }, update: { playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0, playMode: rooms[currentRoom].state.playMode || 'sequence' }, create: { id: currentRoom, playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0, playMode: rooms[currentRoom].state.playMode || 'sequence' } }); } catch (_) {}
+      io.to(currentRoom).emit('playlist-updated', rooms[currentRoom].playlist);
+      // respond ok
+      if (typeof cb === 'function') cb({ ok: true, item });
+    } catch (e) {
+      if (typeof cb === 'function') cb({ ok: false, message: 'error' });
+    }
+  });
+
+  socket.on('playlist-remove', async ({ id } = {}, cb) => {
+    if (!currentRoom) return;
+    try {
+      rooms[currentRoom].playlist = rooms[currentRoom].playlist || [];
+      const idx = rooms[currentRoom].playlist.findIndex((x) => x.id === id);
+      if (idx === -1) { if (typeof cb === 'function') cb({ ok: false, message: 'not found' }); return; }
+      const removed = rooms[currentRoom].playlist.splice(idx, 1)[0];
+      // persist
+      try { await prisma.room.upsert({ where: { id: currentRoom }, update: { playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0, playMode: rooms[currentRoom].state.playMode || 'sequence' }, create: { id: currentRoom, playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0, playMode: rooms[currentRoom].state.playMode || 'sequence' } }); } catch (_) {}
+      io.to(currentRoom).emit('playlist-updated', rooms[currentRoom].playlist);
+      if (typeof cb === 'function') cb({ ok: true, removed });
+    } catch (e) {
+      if (typeof cb === 'function') cb({ ok: false, message: 'error' });
+    }
+  });
+
+  // play mode: 'single' | 'sequence' | 'loop' | 'shuffle'
+  socket.on('set-play-mode', (mode, cb) => {
+    if (!currentRoom) return;
+    try {
+      const allowed = ['single', 'sequence', 'loop', 'shuffle'];
+      if (!allowed.includes(mode)) {
+        if (typeof cb === 'function') cb({ ok: false, message: 'invalid mode' });
+        return;
+      }
+      rooms[currentRoom].state.playMode = mode;
+      io.to(currentRoom).emit('play-mode', mode);
+      // persist
+      (async () => {
+        try { await prisma.room.upsert({ where: { id: currentRoom }, update: { playMode: mode, playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0 }, create: { id: currentRoom, playMode: mode, playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0 } }); } catch (_) {}
+      })();
+      if (typeof cb === 'function') cb({ ok: true });
+    } catch (e) {
+      if (typeof cb === 'function') cb({ ok: false, message: 'error' });
+    }
+  });
+
+  // server-driven track navigation
+  socket.on('playlist-next', (cb) => {
+    if (!currentRoom) return;
+    try {
+      const pl = rooms[currentRoom].playlist || [];
+      if (!pl.length) { if (typeof cb === 'function') cb({ ok: false, message: 'empty' }); return; }
+      const idx = typeof rooms[currentRoom].state.currentIndex === 'number' ? rooms[currentRoom].state.currentIndex : 0;
+      const mode = rooms[currentRoom].state.playMode || 'sequence';
+      let next = idx;
+      if (mode === 'single') next = idx; else if (mode === 'sequence') next = Math.min(idx + 1, pl.length - 1); else if (mode === 'loop') next = (idx + 1) % pl.length; else if (mode === 'shuffle') next = Math.floor(Math.random() * pl.length);
+      const prevIdx = typeof rooms[currentRoom].state.currentIndex === 'number' ? rooms[currentRoom].state.currentIndex : -1;
+      rooms[currentRoom].state.currentIndex = next;
+      rooms[currentRoom].state.url = pl[next].url;
+      // reset playback position when switching tracks
+      rooms[currentRoom].state.currentTime = 0;
+      // if we actually moved to a different track (or mode intends replay), mark as playing so clients auto-play
+      rooms[currentRoom].state.playing = (next !== prevIdx) || (rooms[currentRoom].state.playMode === 'single');
+      rooms[currentRoom].state.updatedAt = Date.now();
+      io.to(currentRoom).emit('playlist-updated', rooms[currentRoom].playlist);
+      // also emit a explicit set-track + play so clients reliably load and start playback
+      try { io.to(currentRoom).emit('set-track', { url: rooms[currentRoom].state.url }); } catch (_) {}
+      try { io.to(currentRoom).emit('play', { currentTime: 0 }); } catch (_) {}
+      io.to(currentRoom).emit('room-state', rooms[currentRoom].state);
+      // persist
+      (async () => { try { await prisma.room.upsert({ where: { id: currentRoom }, update: { currentIndex: rooms[currentRoom].state.currentIndex, playlist: JSON.stringify(rooms[currentRoom].playlist || []), playMode: rooms[currentRoom].state.playMode || 'sequence' }, create: { id: currentRoom, currentIndex: rooms[currentRoom].state.currentIndex, playlist: JSON.stringify(rooms[currentRoom].playlist || []), playMode: rooms[currentRoom].state.playMode || 'sequence' } }); } catch (_) {} })();
+      if (typeof cb === 'function') cb({ ok: true, index: next });
+    } catch (e) { if (typeof cb === 'function') cb({ ok: false }); }
+  });
+
+  socket.on('playlist-prev', (cb) => {
+    if (!currentRoom) return;
+    try {
+      const pl = rooms[currentRoom].playlist || [];
+      if (!pl.length) { if (typeof cb === 'function') cb({ ok: false, message: 'empty' }); return; }
+      const idx = typeof rooms[currentRoom].state.currentIndex === 'number' ? rooms[currentRoom].state.currentIndex : 0;
+      let prev = idx > 0 ? idx - 1 : 0;
+      const prevIdx2 = typeof rooms[currentRoom].state.currentIndex === 'number' ? rooms[currentRoom].state.currentIndex : -1;
+      rooms[currentRoom].state.currentIndex = prev;
+      rooms[currentRoom].state.url = pl[prev].url;
+      // reset playback position when switching tracks
+      rooms[currentRoom].state.currentTime = 0;
+      rooms[currentRoom].state.playing = (prev !== prevIdx2);
+      rooms[currentRoom].state.updatedAt = Date.now();
+      io.to(currentRoom).emit('playlist-updated', rooms[currentRoom].playlist);
+      try { io.to(currentRoom).emit('set-track', { url: rooms[currentRoom].state.url }); } catch (_) {}
+      try { io.to(currentRoom).emit('play', { currentTime: 0 }); } catch (_) {}
+      io.to(currentRoom).emit('room-state', rooms[currentRoom].state);
+      (async () => { try { await prisma.room.upsert({ where: { id: currentRoom }, update: { currentIndex: rooms[currentRoom].state.currentIndex, playlist: JSON.stringify(rooms[currentRoom].playlist || []), playMode: rooms[currentRoom].state.playMode || 'sequence' }, create: { id: currentRoom, currentIndex: rooms[currentRoom].state.currentIndex, playlist: JSON.stringify(rooms[currentRoom].playlist || []), playMode: rooms[currentRoom].state.playMode || 'sequence' } }); } catch (_) {} })();
+      if (typeof cb === 'function') cb({ ok: true, index: prev });
+    } catch (e) { if (typeof cb === 'function') cb({ ok: false }); }
+  });
+
+  socket.on('set-current-index', (idx, cb) => {
+    if (!currentRoom) return;
+    try {
+      const pl = rooms[currentRoom].playlist || [];
+      if (!pl.length || typeof idx !== 'number' || idx < 0 || idx >= pl.length) { if (typeof cb === 'function') cb({ ok: false, message: 'invalid index' }); return; }
+      const prevIdx3 = typeof rooms[currentRoom].state.currentIndex === 'number' ? rooms[currentRoom].state.currentIndex : -1;
+      rooms[currentRoom].state.currentIndex = idx;
+      rooms[currentRoom].state.url = pl[idx].url;
+      // reset playback position when switching tracks
+      rooms[currentRoom].state.currentTime = 0;
+      rooms[currentRoom].state.playing = (idx !== prevIdx3) || (rooms[currentRoom].state.playMode === 'single');
+      rooms[currentRoom].state.updatedAt = Date.now();
+      io.to(currentRoom).emit('room-state', rooms[currentRoom].state);
+      try { io.to(currentRoom).emit('set-track', { url: rooms[currentRoom].state.url }); } catch (_) {}
+      try { io.to(currentRoom).emit('play', { currentTime: 0 }); } catch (_) {}
+      (async () => { try { await prisma.room.upsert({ where: { id: currentRoom }, update: { currentIndex: rooms[currentRoom].state.currentIndex, playlist: JSON.stringify(rooms[currentRoom].playlist || []), playMode: rooms[currentRoom].state.playMode || 'sequence' }, create: { id: currentRoom, currentIndex: rooms[currentRoom].state.currentIndex, playlist: JSON.stringify(rooms[currentRoom].playlist || []), playMode: rooms[currentRoom].state.playMode || 'sequence' } }); } catch (_) {} })();
+      if (typeof cb === 'function') cb({ ok: true });
+    } catch (e) { if (typeof cb === 'function') cb({ ok: false }); }
   });
 
   socket.on('disconnect', () => {
@@ -550,6 +727,37 @@ const apiServer = createServer(async (req, res) => {
       } catch (err) {
         console.error('[API] resend email error', err && err.message ? err.message : err);
         res.writeHead(500); return res.end('send error');
+      }
+    } catch (e) {
+      res.writeHead(500); return res.end('error');
+    }
+  }
+
+  // API: search music (proxy to NeteaseCloudMusicApi)
+  if (req.method === 'GET' && req.url && req.url.startsWith('/api/search')) {
+    try {
+      const url = new URL(req.url, `http://localhost:${API_PORT}`);
+      const q = url.searchParams.get('q') || '';
+      if (!q) { res.writeHead(400); return res.end('missing q'); }
+      try {
+        const mod = await import('NeteaseCloudMusicApi');
+        const apiSearch = mod.search || (mod.default && mod.default.search);
+        if (!apiSearch) { res.writeHead(500); return res.end('search unavailable'); }
+        const apiRes = await apiSearch({ keywords: q });
+        const songs = apiRes && apiRes.body && apiRes.body.result && apiRes.body.result.songs ? apiRes.body.result.songs : [];
+        const list = songs.map((s) => ({
+          id: s.id,
+          name: s.name,
+          artists: (s.ar || s.artists || []).map ? (s.ar || s.artists).map((a) => a.name || a).join(', ') : (s.artists || '').toString(),
+          album: (s.al && s.al.name) || (s.album && s.album.name) || '',
+          src: `https://music.163.com/song/media/outer/url?id=${s.id}.mp3`
+        }));
+        const body = JSON.stringify({ ok: true, list });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true' });
+        return res.end(body);
+      } catch (e) {
+        console.error('[API] search error', e && e.message ? e.message : e);
+        res.writeHead(500); return res.end('search error');
       }
     } catch (e) {
       res.writeHead(500); return res.end('error');

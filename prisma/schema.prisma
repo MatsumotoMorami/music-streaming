@@ -17,3 +17,12 @@ model User {
   bio          String?
   avatar       String?
 }
+
+model Room {
+  id           String  @id
+  createdAt    DateTime @default(now())
+  // playlist stored as JSON string
+  playlist     String? @default("[]")
+  playMode     String  @default("sequence")
+  currentIndex Int     @default(0)
+}
