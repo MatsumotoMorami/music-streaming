@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import Link from "next/link";
+import Header from './Header.client';
 import "./globals.css";
 
 const geistSans = Geist({
@@ -27,7 +29,13 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
       >
-        {children}
+        <header className="w-full border-b bg-white/50">
+          <div className="mx-auto max-w-6xl flex items-center justify-between px-6 py-3">
+            <div className="text-lg font-semibold">共享音乐</div>
+            <Header />
+          </div>
+        </header>
+        <main>{children}</main>
       </body>
     </html>
   );
