@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { useParams } from "next/navigation";
 
 export default function RoomPage() {
@@ -92,7 +93,7 @@ export default function RoomPage() {
         setTrackUrl(url);
       });
 
-      s.on("play", ({ currentTime }) => {
+      s.on("play", ({ currentTime }: { currentTime?: number }) => {
         if (audioRef.current) {
           audioRef.current.currentTime = currentTime || 0;
           audioRef.current.play().catch(() => {});
@@ -100,7 +101,7 @@ export default function RoomPage() {
         setIsPlaying(true);
       });
 
-      s.on("pause", ({ currentTime }) => {
+      s.on("pause", ({ currentTime }: { currentTime?: number }) => {
         if (audioRef.current) {
           audioRef.current.currentTime = currentTime || audioRef.current.currentTime;
           audioRef.current.pause();
@@ -108,7 +109,7 @@ export default function RoomPage() {
         setIsPlaying(false);
       });
 
-      s.on("seek", ({ currentTime }) => {
+      s.on("seek", ({ currentTime }: { currentTime?: number }) => {
         if (audioRef.current) audioRef.current.currentTime = currentTime || 0;
         setCurrentTime(currentTime || 0);
       });
@@ -551,7 +552,7 @@ export default function RoomPage() {
     if (socket && joined) socket.emit("seek", { currentTime: t });
   }
 
-  const playModeIcons: Record<string, { label: string; icon: JSX.Element }> = {
+  const playModeIcons: Record<string, { label: string; icon: ReactNode }> = {
     single: {
       label: '单曲循环',
       icon: (

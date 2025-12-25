@@ -1,0 +1,32 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+    depends_on:
+      - server
+
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    ports:
+      - "4000:4000"
+      - "4001:4001"
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      API_PORT: 4001
+      FRONTEND_URL: http://localhost:3000
+      DATABASE_URL: file:/data/dev.db
+    env_file:
+      - .env
+    volumes:
+      - prisma-data:/data
+
+volumes:
+  prisma-data:
