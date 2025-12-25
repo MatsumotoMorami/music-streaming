@@ -14,7 +14,8 @@ const PORT = process.env.PORT || 4000;
 
 const httpServer = createServer();
 const io = new Server(httpServer, {
-  cors: { origin: '*' }
+  cors: { origin: '*' },
+  path: '/ws/socket.io',
 });
 
 // Prisma client for SQLite
@@ -984,7 +985,7 @@ const apiServer = createServer(async (req, res) => {
   }
 
   // API: playlist track all (proxy to NeteaseCloudMusicApi)
-  if (req.method === 'GET' && req.url && req.url.startsWith('/playlist/track/all')) {
+  if (req.method === 'GET' && req.url && (req.url.startsWith('/playlist/track/all') || req.url.startsWith('/api/playlist/track/all'))) {
     try {
       const url = new URL(req.url, `http://localhost:${API_PORT}`);
       const idParam = url.searchParams.get('id');

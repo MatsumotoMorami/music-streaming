@@ -17,7 +17,7 @@ export default function ProfilePage() {
       try {
         const headers: any = {};
         if (token) headers['Authorization'] = `Bearer ${token}`;
-        const res = await fetch('http://localhost:4001/api/profile', { credentials: 'include', headers });
+        const res = await fetch('/api/profile', { credentials: 'include', headers });
         if (!res.ok) return;
         const data = await res.json();
         if (mounted && data && data.profile) setProfile(data.profile);
@@ -84,14 +84,14 @@ export default function ProfilePage() {
       const body: any = { nickname: profile?.nickname || '', bio: profile?.bio || '' };
       if (avatarBase64) body.avatarBase64 = avatarBase64;
       if (password) body.password = password;
-      const res = await fetch('http://localhost:4001/api/profile', { method: 'POST', credentials: 'include', headers, body: JSON.stringify(body) });
+      const res = await fetch('/api/profile', { method: 'POST', credentials: 'include', headers, body: JSON.stringify(body) });
       if (!res.ok) throw new Error('Save failed');
       alert('保存成功');
       // refresh profile after save
       try {
         const headers2: any = {};
         if (token) headers2['Authorization'] = `Bearer ${token}`;
-        const pRes = await fetch('http://localhost:4001/api/profile', { credentials: 'include', headers: headers2 });
+        const pRes = await fetch('/api/profile', { credentials: 'include', headers: headers2 });
         if (pRes.ok) {
           const pData = await pRes.json();
           setProfile(pData.profile || null);

@@ -17,7 +17,8 @@ export default function Home() {
     let mounted = true;
     (async () => {
       const io = (await import('socket.io-client')).io;
-      const s = io('http://localhost:4000');
+      const base = window.location.origin;
+      const s = io(base, { path: '/ws/socket.io' });
       const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
       s.on('connect', () => {
         try { s.emit('subscribe-rooms', { token }); } catch (e) {}

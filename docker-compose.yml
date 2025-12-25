@@ -21,7 +21,8 @@ services:
       NODE_ENV: production
       PORT: 4000
       API_PORT: 4001
-      FRONTEND_URL: http://localhost:3000
+      FRONTEND_URL: https://music.morami.icu
+      VERIFY_URL_BASE: https://music.morami.icu
       DATABASE_URL: file:/data/dev.db
     env_file:
       - .env

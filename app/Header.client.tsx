@@ -27,7 +27,7 @@ export default function Header() {
         const headers: any = {};
         if (token) headers['Authorization'] = `Bearer ${token}`;
         console.debug('Header: fetching /api/me with token?', !!token);
-        const res = await fetch("http://localhost:4001/api/me", { credentials: 'include', headers });
+        const res = await fetch("/api/me", { credentials: 'include', headers });
         if (!res.ok) {
           console.debug('Header: /api/me responded not ok', res.status);
           return;
@@ -39,7 +39,7 @@ export default function Header() {
           const token2 = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
           const headers2: any = {};
           if (token2) headers2['Authorization'] = `Bearer ${token2}`;
-          const pRes = await fetch('http://localhost:4001/api/profile', { credentials: 'include', headers: headers2 });
+          const pRes = await fetch('/api/profile', { credentials: 'include', headers: headers2 });
           if (pRes.ok) {
             const pData = await pRes.json();
             if (mounted) setProfile(pData.profile || null);
@@ -68,7 +68,7 @@ export default function Header() {
         // revalidate with server
         const headers: any = {};
         if (token) headers['Authorization'] = `Bearer ${token}`;
-        const res = await fetch("http://localhost:4001/api/me", { credentials: 'include', headers });
+        const res = await fetch("/api/me", { credentials: 'include', headers });
         if (res.ok) {
           const data = await res.json();
           if (mounted) setUser(data.user || null);
@@ -78,7 +78,7 @@ export default function Header() {
           const token2 = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
           const headers2: any = {};
           if (token2) headers2['Authorization'] = `Bearer ${token2}`;
-          const pRes = await fetch('http://localhost:4001/api/profile', { credentials: 'include', headers: headers2 });
+          const pRes = await fetch('/api/profile', { credentials: 'include', headers: headers2 });
           if (pRes.ok) {
             const pData = await pRes.json();
             if (mounted) setProfile(pData.profile || null);
@@ -119,7 +119,7 @@ export default function Header() {
           <button
             onClick={async () => {
               try {
-                await fetch('http://localhost:4001/api/logout', { method: 'GET', credentials: 'include' });
+                await fetch('/api/logout', { method: 'GET', credentials: 'include' });
               } catch (_) {}
               try { localStorage.removeItem('authToken'); } catch (_) {}
               setUser(null);

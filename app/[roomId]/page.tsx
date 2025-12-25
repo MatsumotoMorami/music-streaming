@@ -76,7 +76,8 @@ export default function RoomPage() {
     let s: any = null;
     (async () => {
       const io = (await import("socket.io-client")).io;
-      s = io("http://localhost:4000");
+      const base = window.location.origin;
+      s = io(base, { path: '/ws/socket.io' });
       if (!mounted) return;
       setSocket(s);
 
@@ -366,7 +367,7 @@ export default function RoomPage() {
     if (!searchQuery || !searchQuery.trim()) return;
     setSearching(true);
     try {
-      const res = await fetch(`http://localhost:4001/api/search?q=${encodeURIComponent(searchQuery)}`);
+      const res = await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}`);
       if (!res.ok) { setSearchResults([]); setSearching(false); return; }
       const data = await res.json();
       setSearchResults(data.list || []);
@@ -411,7 +412,7 @@ export default function RoomPage() {
           limit: String(batchSize),
           offset: String(currentOffset),
         });
-        const res = await fetch(`http://localhost:4001/playlist/track/all?${params.toString()}`);
+        const res = await fetch(`/api/playlist/track/all?${params.toString()}`);
         if (!res.ok) {
           setImportError('导入失败，请稍后再试');
           break;
