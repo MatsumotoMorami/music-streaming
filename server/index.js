@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { createServer } from 'http';
+import crypto from 'crypto';
 import { Server } from 'socket.io';
 import fs from 'fs';
 import path from 'path';
@@ -66,8 +67,47 @@ function parseJsonBody(req) {
   });
 }
 
-const rooms = {}; // { roomId: { members: { socketId: name }, state: { url, playing, currentTime } } }
+function makeItemId() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+const rooms = {}; // { roomId: { members: { socketId: name }, state: { url, playing, currentTime }, locked: boolean } }
 const roomsSubscribers = new Set(); // socket ids that subscribed to rooms list
+
+async function bootstrapLockedRooms() {
+  try {
+    const persistedRooms = await prisma.room.findMany({ where: { locked: true } });
+    persistedRooms.forEach((persisted) => {
+      const roomId = persisted.id;
+      if (!roomId) return;
+      let playlist = [];
+      try {
+        if (Array.isArray(persisted.playlist)) playlist = persisted.playlist;
+        else if (persisted.playlist) playlist = JSON.parse(String(persisted.playlist));
+      } catch (_) { playlist = []; }
+      const currentIndex = typeof persisted.currentIndex === 'number' ? persisted.currentIndex : 0;
+      const playMode = persisted.playMode || 'sequence';
+      const state = { url: null, playing: false, currentTime: 0, updatedAt: Date.now(), playMode, currentIndex };
+      if (playlist && playlist[currentIndex]) state.url = playlist[currentIndex].url || null;
+      rooms[roomId] = {
+        members: {},
+        byEmail: {},
+        playlist,
+        visibility: persisted.visibility || 'public',
+        passwordHash: persisted.passwordHash || null,
+        locked: true,
+        state,
+      };
+    });
+  } catch (e) {
+    console.error('[bootstrap] failed to load locked rooms', e && e.message ? e.message : e);
+  }
+}
+
+function roomStatePayload(room) {
+  return { ...room.state, locked: !!room.locked, visibility: room.visibility || 'public' };
+}
 
 function sendRoomsToSocket(s) {
   try {
@@ -80,21 +120,21 @@ function sendRoomsToSocket(s) {
         const sock = io.sockets.sockets.get(sid);
         if (sock && sock.connected && sock.data && sock.data.lastSeen && (now - sock.data.lastSeen) < 5000) active++;
       }
-      return { id, members: active, url: room.state?.url || null, playing: room.state?.playing || false, joined: !!(email && room.byEmail && room.byEmail[email]), visibility: room.visibility || 'public' };
-    }).filter((r) => r.members > 0);
+      return { id, members: active, url: room.state?.url || null, playing: room.state?.playing || false, joined: !!(email && room.byEmail && room.byEmail[email]), visibility: room.visibility || 'public', locked: !!room.locked };
+    }).filter((r) => r.members > 0 || r.locked);
     // diff against previous snapshot stored on the socket
     const prevMap = s.data.roomsSnapshot || {};
     // first time subscription: send full list
     if (!prevMap || Object.keys(prevMap).length === 0) {
       const map = {};
-      list.forEach((r) => { map[r.id] = JSON.stringify({ members: r.members, url: r.url, playing: r.playing, joined: r.joined }); });
+      list.forEach((r) => { map[r.id] = JSON.stringify({ members: r.members, url: r.url, playing: r.playing, joined: r.joined, locked: r.locked, visibility: r.visibility }); });
       s.data.roomsSnapshot = map;
       s.emit('rooms-list', list);
       return;
     }
 
     const newMap = {};
-    list.forEach((r) => { newMap[r.id] = JSON.stringify({ members: r.members, url: r.url, playing: r.playing, joined: r.joined }); });
+    list.forEach((r) => { newMap[r.id] = JSON.stringify({ members: r.members, url: r.url, playing: r.playing, joined: r.joined, locked: r.locked, visibility: r.visibility }); });
 
     const added = [];
     const updated = [];
@@ -163,7 +203,7 @@ io.on('connection', (socket) => {
       }
       socket.leave(rid);
       io.to(rid).emit('user-list', Object.values(rooms[rid].members));
-      if (Object.keys(rooms[rid].members).length === 0) {
+      if (Object.keys(rooms[rid].members).length === 0 && !rooms[rid].locked) {
         delete rooms[rid];
       }
     }
@@ -174,6 +214,12 @@ io.on('connection', (socket) => {
 
   socket.on('join-room', async (payload = {}, cb) => {
     const { roomId, name, token, visibility, password } = payload || {};
+    if (!roomId || typeof roomId !== 'string') {
+      const err = { ok: false, code: 'invalid-room', message: 'invalid room id' };
+      if (typeof cb === 'function') try { cb(err); } catch (__) {}
+      else socket.emit('join-error', err);
+      return;
+    }
     currentRoom = roomId;
     // verify token if provided to enforce one-account-per-room
     let accountEmail = null;
@@ -190,20 +236,25 @@ io.on('connection', (socket) => {
       // try to load from DB
       let persisted = null;
       try { persisted = await prisma.room.findUnique({ where: { id: roomId } }); } catch (e) { persisted = null; }
-      rooms[roomId] = { members: {}, byEmail: {}, playlist: [], visibility: 'public', passwordHash: null, state: { url: null, playing: false, currentTime: 0, updatedAt: Date.now(), playMode: 'sequence', currentIndex: 0 } };
+      rooms[roomId] = { members: {}, byEmail: {}, playlist: [], visibility: 'public', passwordHash: null, locked: false, state: { url: null, playing: false, currentTime: 0, updatedAt: Date.now(), playMode: 'sequence', currentIndex: 0 } };
       // if creator passed visibility/password, set them (hashing password)
       try {
+        const roomRef = rooms[roomId];
+        if (!roomRef) return;
         if (visibility === 'private' && password) {
           const hash = await bcrypt.hash(String(password), 10);
-          rooms[roomId].visibility = 'private';
-          rooms[roomId].passwordHash = hash;
+          roomRef.visibility = 'private';
+          roomRef.passwordHash = hash;
         } else {
-          rooms[roomId].visibility = 'public';
-          rooms[roomId].passwordHash = null;
+          roomRef.visibility = 'public';
+          roomRef.passwordHash = null;
         }
       } catch (e) {
-        rooms[roomId].visibility = 'public';
-        rooms[roomId].passwordHash = null;
+        const roomRef = rooms[roomId];
+        if (roomRef) {
+          roomRef.visibility = 'public';
+          roomRef.passwordHash = null;
+        }
       }
       if (persisted) {
         try {
@@ -211,6 +262,9 @@ io.on('connection', (socket) => {
         } catch (_) { try { rooms[roomId].playlist = persisted.playlist ? JSON.parse(String(persisted.playlist)) : []; } catch (__){ rooms[roomId].playlist = []; } }
         rooms[roomId].state.playMode = persisted.playMode || rooms[roomId].state.playMode;
         rooms[roomId].state.currentIndex = typeof persisted.currentIndex === 'number' ? persisted.currentIndex : 0;
+        rooms[roomId].visibility = persisted.visibility || rooms[roomId].visibility || 'public';
+        rooms[roomId].passwordHash = persisted.passwordHash || null;
+        rooms[roomId].locked = !!persisted.locked;
         const idx = rooms[roomId].state.currentIndex || 0;
         if (rooms[roomId].playlist && rooms[roomId].playlist[idx]) rooms[roomId].state.url = rooms[roomId].playlist[idx].url;
       }
@@ -246,6 +300,13 @@ io.on('connection', (socket) => {
       }
     }
 
+    if (!rooms[roomId]) {
+      const err = { ok: false, code: 'room-missing', message: 'room missing' };
+      if (typeof cb === 'function') try { cb(err); } catch (__) {}
+      else socket.emit('join-error', err);
+      return;
+    }
+
     socket.join(roomId);
     socket.data.name = name || 'Anonymous';
     if (accountEmail) socket.data.email = accountEmail;
@@ -257,7 +318,7 @@ io.on('connection', (socket) => {
     io.to(roomId).emit('user-list', Object.values(rooms[roomId].members));
 
     // send current room state to the newly joined socket only
-    socket.emit('room-state', rooms[roomId].state);
+    socket.emit('room-state', roomStatePayload(rooms[roomId]));
     // send current playlist and play mode as well
     try { socket.emit('playlist-updated', rooms[roomId].playlist || []); } catch (__) {}
     try { socket.emit('play-mode', rooms[roomId].state.playMode || 'sequence'); } catch (__) {}
@@ -315,14 +376,69 @@ io.on('connection', (socket) => {
         if (typeof cb === 'function') cb({ ok: false, message: 'missing url' });
         return;
       }
-      const item = { id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2,6)}`, url: track.url, title: track.title || '', addedBy: socket.data.name || 'Anonymous', ts: Date.now() };
+      const item = { id: makeItemId(), url: track.url, title: track.title || '', cover: track.cover || null, addedBy: socket.data.name || 'Anonymous', ts: Date.now() };
       rooms[currentRoom].playlist = rooms[currentRoom].playlist || [];
       rooms[currentRoom].playlist.push(item);
       // persist to DB
-      try { await prisma.room.upsert({ where: { id: currentRoom }, update: { playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0, playMode: rooms[currentRoom].state.playMode || 'sequence' }, create: { id: currentRoom, playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0, playMode: rooms[currentRoom].state.playMode || 'sequence' } }); } catch (_) {}
+      try { await prisma.room.upsert({ where: { id: currentRoom }, update: { playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0, playMode: rooms[currentRoom].state.playMode || 'sequence', visibility: rooms[currentRoom].visibility, passwordHash: rooms[currentRoom].passwordHash, locked: rooms[currentRoom].locked }, create: { id: currentRoom, playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0, playMode: rooms[currentRoom].state.playMode || 'sequence', visibility: rooms[currentRoom].visibility, passwordHash: rooms[currentRoom].passwordHash, locked: rooms[currentRoom].locked } }); } catch (_) {}
       io.to(currentRoom).emit('playlist-updated', rooms[currentRoom].playlist);
       // respond ok
       if (typeof cb === 'function') cb({ ok: true, item });
+    } catch (e) {
+      if (typeof cb === 'function') cb({ ok: false, message: 'error' });
+    }
+  });
+
+  socket.on('playlist-add-batch', async (tracks, cb) => {
+    if (!currentRoom) return;
+    try {
+      if (!Array.isArray(tracks) || tracks.length === 0) {
+        if (typeof cb === 'function') cb({ ok: false, message: 'missing tracks' });
+        return;
+      }
+      const added = [];
+      rooms[currentRoom].playlist = rooms[currentRoom].playlist || [];
+      for (const track of tracks) {
+        if (!track || !track.url) continue;
+        const item = {
+          id: makeItemId(),
+          url: track.url,
+          title: track.title || '',
+          cover: track.cover || null,
+          addedBy: socket.data.name || 'Anonymous',
+          ts: Date.now(),
+        };
+        rooms[currentRoom].playlist.push(item);
+        added.push(item);
+      }
+      if (!added.length) {
+        if (typeof cb === 'function') cb({ ok: false, message: 'no valid tracks' });
+        return;
+      }
+      try {
+        await prisma.room.upsert({
+          where: { id: currentRoom },
+          update: {
+            playlist: JSON.stringify(rooms[currentRoom].playlist || []),
+            currentIndex: rooms[currentRoom].state.currentIndex || 0,
+            playMode: rooms[currentRoom].state.playMode || 'sequence',
+            visibility: rooms[currentRoom].visibility,
+            passwordHash: rooms[currentRoom].passwordHash,
+            locked: rooms[currentRoom].locked,
+          },
+          create: {
+            id: currentRoom,
+            playlist: JSON.stringify(rooms[currentRoom].playlist || []),
+            currentIndex: rooms[currentRoom].state.currentIndex || 0,
+            playMode: rooms[currentRoom].state.playMode || 'sequence',
+            visibility: rooms[currentRoom].visibility,
+            passwordHash: rooms[currentRoom].passwordHash,
+            locked: rooms[currentRoom].locked,
+          },
+        });
+      } catch (_) {}
+      io.to(currentRoom).emit('playlist-updated', rooms[currentRoom].playlist);
+      if (typeof cb === 'function') cb({ ok: true, count: added.length });
     } catch (e) {
       if (typeof cb === 'function') cb({ ok: false, message: 'error' });
     }
@@ -336,7 +452,7 @@ io.on('connection', (socket) => {
       if (idx === -1) { if (typeof cb === 'function') cb({ ok: false, message: 'not found' }); return; }
       const removed = rooms[currentRoom].playlist.splice(idx, 1)[0];
       // persist
-      try { await prisma.room.upsert({ where: { id: currentRoom }, update: { playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0, playMode: rooms[currentRoom].state.playMode || 'sequence' }, create: { id: currentRoom, playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0, playMode: rooms[currentRoom].state.playMode || 'sequence' } }); } catch (_) {}
+      try { await prisma.room.upsert({ where: { id: currentRoom }, update: { playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0, playMode: rooms[currentRoom].state.playMode || 'sequence', visibility: rooms[currentRoom].visibility, passwordHash: rooms[currentRoom].passwordHash, locked: rooms[currentRoom].locked }, create: { id: currentRoom, playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0, playMode: rooms[currentRoom].state.playMode || 'sequence', visibility: rooms[currentRoom].visibility, passwordHash: rooms[currentRoom].passwordHash, locked: rooms[currentRoom].locked } }); } catch (_) {}
       io.to(currentRoom).emit('playlist-updated', rooms[currentRoom].playlist);
       if (typeof cb === 'function') cb({ ok: true, removed });
     } catch (e) {
@@ -357,7 +473,7 @@ io.on('connection', (socket) => {
       io.to(currentRoom).emit('play-mode', mode);
       // persist
       (async () => {
-        try { await prisma.room.upsert({ where: { id: currentRoom }, update: { playMode: mode, playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0 }, create: { id: currentRoom, playMode: mode, playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0 } }); } catch (_) {}
+        try { await prisma.room.upsert({ where: { id: currentRoom }, update: { playMode: mode, playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0, visibility: rooms[currentRoom].visibility, passwordHash: rooms[currentRoom].passwordHash, locked: rooms[currentRoom].locked }, create: { id: currentRoom, playMode: mode, playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0, visibility: rooms[currentRoom].visibility, passwordHash: rooms[currentRoom].passwordHash, locked: rooms[currentRoom].locked } }); } catch (_) {}
       })();
       if (typeof cb === 'function') cb({ ok: true });
     } catch (e) {
@@ -387,9 +503,9 @@ io.on('connection', (socket) => {
       // also emit a explicit set-track + play so clients reliably load and start playback
       try { io.to(currentRoom).emit('set-track', { url: rooms[currentRoom].state.url }); } catch (_) {}
       try { io.to(currentRoom).emit('play', { currentTime: 0 }); } catch (_) {}
-      io.to(currentRoom).emit('room-state', rooms[currentRoom].state);
+      io.to(currentRoom).emit('room-state', roomStatePayload(rooms[currentRoom]));
       // persist
-      (async () => { try { await prisma.room.upsert({ where: { id: currentRoom }, update: { currentIndex: rooms[currentRoom].state.currentIndex, playlist: JSON.stringify(rooms[currentRoom].playlist || []), playMode: rooms[currentRoom].state.playMode || 'sequence' }, create: { id: currentRoom, currentIndex: rooms[currentRoom].state.currentIndex, playlist: JSON.stringify(rooms[currentRoom].playlist || []), playMode: rooms[currentRoom].state.playMode || 'sequence' } }); } catch (_) {} })();
+      (async () => { try { await prisma.room.upsert({ where: { id: currentRoom }, update: { currentIndex: rooms[currentRoom].state.currentIndex, playlist: JSON.stringify(rooms[currentRoom].playlist || []), playMode: rooms[currentRoom].state.playMode || 'sequence', visibility: rooms[currentRoom].visibility, passwordHash: rooms[currentRoom].passwordHash, locked: rooms[currentRoom].locked }, create: { id: currentRoom, currentIndex: rooms[currentRoom].state.currentIndex, playlist: JSON.stringify(rooms[currentRoom].playlist || []), playMode: rooms[currentRoom].state.playMode || 'sequence', visibility: rooms[currentRoom].visibility, passwordHash: rooms[currentRoom].passwordHash, locked: rooms[currentRoom].locked } }); } catch (_) {} })();
       if (typeof cb === 'function') cb({ ok: true, index: next });
     } catch (e) { if (typeof cb === 'function') cb({ ok: false }); }
   });
@@ -411,8 +527,8 @@ io.on('connection', (socket) => {
       io.to(currentRoom).emit('playlist-updated', rooms[currentRoom].playlist);
       try { io.to(currentRoom).emit('set-track', { url: rooms[currentRoom].state.url }); } catch (_) {}
       try { io.to(currentRoom).emit('play', { currentTime: 0 }); } catch (_) {}
-      io.to(currentRoom).emit('room-state', rooms[currentRoom].state);
-      (async () => { try { await prisma.room.upsert({ where: { id: currentRoom }, update: { currentIndex: rooms[currentRoom].state.currentIndex, playlist: JSON.stringify(rooms[currentRoom].playlist || []), playMode: rooms[currentRoom].state.playMode || 'sequence' }, create: { id: currentRoom, currentIndex: rooms[currentRoom].state.currentIndex, playlist: JSON.stringify(rooms[currentRoom].playlist || []), playMode: rooms[currentRoom].state.playMode || 'sequence' } }); } catch (_) {} })();
+      io.to(currentRoom).emit('room-state', roomStatePayload(rooms[currentRoom]));
+      (async () => { try { await prisma.room.upsert({ where: { id: currentRoom }, update: { currentIndex: rooms[currentRoom].state.currentIndex, playlist: JSON.stringify(rooms[currentRoom].playlist || []), playMode: rooms[currentRoom].state.playMode || 'sequence', visibility: rooms[currentRoom].visibility, passwordHash: rooms[currentRoom].passwordHash, locked: rooms[currentRoom].locked }, create: { id: currentRoom, currentIndex: rooms[currentRoom].state.currentIndex, playlist: JSON.stringify(rooms[currentRoom].playlist || []), playMode: rooms[currentRoom].state.playMode || 'sequence', visibility: rooms[currentRoom].visibility, passwordHash: rooms[currentRoom].passwordHash, locked: rooms[currentRoom].locked } }); } catch (_) {} })();
       if (typeof cb === 'function') cb({ ok: true, index: prev });
     } catch (e) { if (typeof cb === 'function') cb({ ok: false }); }
   });
@@ -429,10 +545,10 @@ io.on('connection', (socket) => {
       rooms[currentRoom].state.currentTime = 0;
       rooms[currentRoom].state.playing = (idx !== prevIdx3) || (rooms[currentRoom].state.playMode === 'single');
       rooms[currentRoom].state.updatedAt = Date.now();
-      io.to(currentRoom).emit('room-state', rooms[currentRoom].state);
+      io.to(currentRoom).emit('room-state', roomStatePayload(rooms[currentRoom]));
       try { io.to(currentRoom).emit('set-track', { url: rooms[currentRoom].state.url }); } catch (_) {}
       try { io.to(currentRoom).emit('play', { currentTime: 0 }); } catch (_) {}
-      (async () => { try { await prisma.room.upsert({ where: { id: currentRoom }, update: { currentIndex: rooms[currentRoom].state.currentIndex, playlist: JSON.stringify(rooms[currentRoom].playlist || []), playMode: rooms[currentRoom].state.playMode || 'sequence' }, create: { id: currentRoom, currentIndex: rooms[currentRoom].state.currentIndex, playlist: JSON.stringify(rooms[currentRoom].playlist || []), playMode: rooms[currentRoom].state.playMode || 'sequence' } }); } catch (_) {} })();
+      (async () => { try { await prisma.room.upsert({ where: { id: currentRoom }, update: { currentIndex: rooms[currentRoom].state.currentIndex, playlist: JSON.stringify(rooms[currentRoom].playlist || []), playMode: rooms[currentRoom].state.playMode || 'sequence', visibility: rooms[currentRoom].visibility, passwordHash: rooms[currentRoom].passwordHash, locked: rooms[currentRoom].locked }, create: { id: currentRoom, currentIndex: rooms[currentRoom].state.currentIndex, playlist: JSON.stringify(rooms[currentRoom].playlist || []), playMode: rooms[currentRoom].state.playMode || 'sequence', visibility: rooms[currentRoom].visibility, passwordHash: rooms[currentRoom].passwordHash, locked: rooms[currentRoom].locked } }); } catch (_) {} })();
       if (typeof cb === 'function') cb({ ok: true });
     } catch (e) { if (typeof cb === 'function') cb({ ok: false }); }
   });
@@ -448,12 +564,91 @@ io.on('connection', (socket) => {
       }
       io.to(currentRoom).emit('user-list', Object.values(rooms[currentRoom].members));
       // if no members left, clean up room
-      if (Object.keys(rooms[currentRoom].members).length === 0) {
+      if (Object.keys(rooms[currentRoom].members).length === 0 && !rooms[currentRoom].locked) {
         delete rooms[currentRoom];
       }
     }
     // notify rooms subscribers
     broadcastRoomsToSubscribers();
+  });
+
+  socket.on('set-room-locked', async ({ roomId, locked } = {}, cb) => {
+    const rid = roomId || currentRoom;
+    if (!rid || !rooms[rid]) {
+      const err = { ok: false, message: 'room not found' };
+      if (typeof cb === 'function') try { cb(err); } catch (__) {}
+      return;
+    }
+    rooms[rid].locked = !!locked;
+    try {
+      await prisma.room.upsert({
+        where: { id: rid },
+        update: { locked: rooms[rid].locked, visibility: rooms[rid].visibility, passwordHash: rooms[rid].passwordHash },
+        create: {
+          id: rid,
+          locked: rooms[rid].locked,
+          visibility: rooms[rid].visibility,
+          passwordHash: rooms[rid].passwordHash,
+          playlist: JSON.stringify(rooms[rid].playlist || []),
+          currentIndex: rooms[rid].state.currentIndex || 0,
+          playMode: rooms[rid].state.playMode || 'sequence',
+        },
+      });
+    } catch (_) {}
+    try { io.to(rid).emit('room-lock', { locked: rooms[rid].locked }); } catch (_) {}
+    broadcastRoomsToSubscribers();
+    if (typeof cb === 'function') try { cb({ ok: true, locked: rooms[rid].locked }); } catch (__) {}
+  });
+
+  socket.on('set-room-visibility', async ({ roomId, visibility, password } = {}, cb) => {
+    const rid = roomId || currentRoom;
+    if (!rid || !rooms[rid]) {
+      const err = { ok: false, message: 'room not found' };
+      if (typeof cb === 'function') try { cb(err); } catch (__) {}
+      return;
+    }
+    const nextVisibility = visibility === 'private' ? 'private' : 'public';
+    if (nextVisibility === 'private' && !password) {
+      const err = { ok: false, message: 'password required' };
+      if (typeof cb === 'function') try { cb(err); } catch (__) {}
+      return;
+    }
+    try {
+      if (nextVisibility === 'private') {
+        const hash = await bcrypt.hash(String(password), 10);
+        rooms[rid].visibility = 'private';
+        rooms[rid].passwordHash = hash;
+      } else {
+        rooms[rid].visibility = 'public';
+        rooms[rid].passwordHash = null;
+      }
+    } catch (_) {
+      const err = { ok: false, message: 'failed to update visibility' };
+      if (typeof cb === 'function') try { cb(err); } catch (__) {}
+      return;
+    }
+    try {
+      await prisma.room.upsert({
+        where: { id: rid },
+        update: { visibility: rooms[rid].visibility, passwordHash: rooms[rid].passwordHash },
+        create: {
+          id: rid,
+          visibility: rooms[rid].visibility,
+          passwordHash: rooms[rid].passwordHash,
+          locked: rooms[rid].locked,
+          playlist: JSON.stringify(rooms[rid].playlist || []),
+          currentIndex: rooms[rid].state.currentIndex || 0,
+          playMode: rooms[rid].state.playMode || 'sequence',
+        },
+      });
+    } catch (_) {
+      const err = { ok: false, message: 'failed to persist visibility' };
+      if (typeof cb === 'function') try { cb(err); } catch (__) {}
+      return;
+    }
+    try { io.to(rid).emit('room-visibility', { visibility: rooms[rid].visibility }); } catch (_) {}
+    broadcastRoomsToSubscribers();
+    if (typeof cb === 'function') try { cb({ ok: true, visibility: rooms[rid].visibility }); } catch (__) {}
   });
 });
 
@@ -475,7 +670,7 @@ setInterval(() => {
       }
     }
 
-    if (!anyAlive) {
+    if (!anyAlive && !room.locked) {
       // no active members responding — destroy the room
       console.log(`[ROOM] Destroying inactive room ${roomId}`);
       delete rooms[roomId];
@@ -514,8 +709,8 @@ const apiServer = createServer(async (req, res) => {
         const s = io.sockets.sockets.get(sid);
         if (s && s.connected && s.data && s.data.lastSeen && (now - s.data.lastSeen) < 5000) active++;
       }
-      return { id, members: active, url: room.state?.url || null, playing: room.state?.playing || false };
-    }).filter((r) => r.members > 0);
+      return { id, members: active, url: room.state?.url || null, playing: room.state?.playing || false, locked: !!room.locked };
+    }).filter((r) => r.members > 0 || r.locked);
     const body = JSON.stringify(list);
     res.writeHead(200, {
       'Content-Type': 'application/json',
@@ -549,7 +744,30 @@ const apiServer = createServer(async (req, res) => {
           const transport = await getTransport();
           const verifyUrl = `${VERIFY_URL_BASE}/api/verify?token=${verifyToken}`;
           const mailFrom = process.env.SMTP_FROM || process.env.SMTP_USER || 'no-reply@example.com';
-          const info = await transport.sendMail({ from: mailFrom, to: email, subject: 'Verify your account', text: `Verify: ${verifyUrl}`, html: `<a href="${verifyUrl}">Verify</a>`, envelope: { from: mailFrom, to: email } });
+          const subject = '【共享音乐】请验证你的邮箱';
+          const text = [
+            '你好，',
+            '',
+            '感谢注册共享音乐。请在 24 小时内完成邮箱验证：',
+            verifyUrl,
+            '',
+            '如果你没有进行注册，请忽略此邮件。',
+            '此邮件为系统自动发送，请勿直接回复。',
+          ].join('\n');
+          const html = `
+            <div style="font-family:Segoe UI,Arial,sans-serif;background:#0b0f1d;color:#e2e8f0;padding:24px;">
+              <div style="max-width:520px;margin:0 auto;background:#10162b;border:1px solid rgba(148,163,184,.25);border-radius:16px;padding:24px;">
+                <h2 style="margin:0 0 12px;font-size:20px;">请验证你的邮箱</h2>
+                <p style="margin:0 0 12px;color:#cbd5f5;">你好，感谢注册共享音乐。请在 24 小时内完成邮箱验证：</p>
+                <a href="${verifyUrl}" style="display:inline-block;margin:12px 0;padding:10px 16px;border-radius:999px;background:#5ef4c1;color:#07131f;text-decoration:none;font-weight:600;">验证邮箱</a>
+                <p style="margin:12px 0;color:#94a3b8;font-size:12px;">如果按钮无法点击，请复制以下链接到浏览器打开：</p>
+                <p style="margin:0;color:#7aa7ff;font-size:12px;word-break:break-all;">${verifyUrl}</p>
+                <hr style="border:none;border-top:1px solid rgba(148,163,184,.2);margin:16px 0;">
+                <p style="margin:0;color:#94a3b8;font-size:12px;">如果你没有进行注册，请忽略此邮件。此邮件为系统自动发送，请勿直接回复。</p>
+              </div>
+            </div>
+          `;
+          const info = await transport.sendMail({ from: mailFrom, to: email, subject, text, html, envelope: { from: mailFrom, to: email } });
           const preview = nodemailer.getTestMessageUrl ? nodemailer.getTestMessageUrl(info) : null;
           console.log('[API] verification email sent, preview:', preview);
         } catch (err) {
@@ -571,22 +789,22 @@ const apiServer = createServer(async (req, res) => {
       const url = new URL(req.url, `http://localhost:${API_PORT}`);
       const token = url.searchParams.get('token');
       if (!token) {
-        const html = `<!doctype html><html><head><meta charset="utf-8"><title>Verification error</title></head><body style="font-family:sans-serif;padding:2rem;"><h1>Missing token</h1><p>No verification token provided.</p><p><a href="${FRONTEND_URL}">Return to app</a></p></body></html>`;
+        const html = `<!doctype html><html><head><meta charset="utf-8"><title>验证失败</title></head><body style="font-family:sans-serif;padding:2rem;"><h1>验证链接无效</h1><p>没有提供验证令牌。</p><p><a href="${FRONTEND_URL}">返回应用</a></p></body></html>`;
         res.writeHead(400, { 'Content-Type': 'text/html' });
         return res.end(html);
       }
       const userEntry = await prisma.user.findFirst({ where: { verifyToken: token } });
       if (!userEntry) {
-        const html = `<!doctype html><html><head><meta charset="utf-8"><title>Verification error</title></head><body style="font-family:sans-serif;padding:2rem;"><h1>Invalid or expired token</h1><p>The verification link is invalid or has already been used.</p><p><a href="${FRONTEND_URL}">Return to app</a></p></body></html>`;
+        const html = `<!doctype html><html><head><meta charset="utf-8"><title>验证失败</title></head><body style="font-family:sans-serif;padding:2rem;"><h1>验证链接已失效</h1><p>该链接无效或已被使用。</p><p><a href="${FRONTEND_URL}">返回应用</a></p></body></html>`;
         res.writeHead(404, { 'Content-Type': 'text/html' });
         return res.end(html);
       }
       await prisma.user.update({ where: { email: userEntry.email }, data: { verified: true, verifyToken: null } });
-      const html = `<!doctype html><html><head><meta charset="utf-8"><title>Verified</title></head><body style="font-family:sans-serif;padding:2rem;"><h1>Verification successful</h1><p>Your email has been verified. You can now return to the app.</p><p><a href="${FRONTEND_URL}">Open app</a></p></body></html>`;
+      const html = `<!doctype html><html><head><meta charset="utf-8"><title>验证成功</title></head><body style="font-family:sans-serif;padding:2rem;"><h1>邮箱验证成功</h1><p>你的邮箱已验证，可以返回应用继续使用。</p><p><a href="${FRONTEND_URL}">打开应用</a></p></body></html>`;
       res.writeHead(200, { 'Content-Type': 'text/html' });
       return res.end(html);
     } catch (e) {
-      const html = `<!doctype html><html><head><meta charset="utf-8"><title>Server error</title></head><body style="font-family:sans-serif;padding:2rem;"><h1>Server error</h1><p>Unable to process verification at this time.</p><p><a href="${FRONTEND_URL}">Return to app</a></p></body></html>`;
+      const html = `<!doctype html><html><head><meta charset="utf-8"><title>服务器错误</title></head><body style="font-family:sans-serif;padding:2rem;"><h1>暂时无法完成验证</h1><p>服务器错误，请稍后再试。</p><p><a href="${FRONTEND_URL}">返回应用</a></p></body></html>`;
       res.writeHead(500, { 'Content-Type': 'text/html' });
       return res.end(html);
     }
@@ -750,6 +968,7 @@ const apiServer = createServer(async (req, res) => {
           name: s.name,
           artists: (s.ar || s.artists || []).map ? (s.ar || s.artists).map((a) => a.name || a).join(', ') : (s.artists || '').toString(),
           album: (s.al && s.al.name) || (s.album && s.album.name) || '',
+          cover: (s.al && s.al.picUrl) || (s.album && s.album.picUrl) || null,
           src: `https://music.163.com/song/media/outer/url?id=${s.id}.mp3`
         }));
         const body = JSON.stringify({ ok: true, list });
@@ -764,15 +983,74 @@ const apiServer = createServer(async (req, res) => {
     }
   }
 
+  // API: playlist track all (proxy to NeteaseCloudMusicApi)
+  if (req.method === 'GET' && req.url && req.url.startsWith('/playlist/track/all')) {
+    try {
+      const url = new URL(req.url, `http://localhost:${API_PORT}`);
+      const idParam = url.searchParams.get('id');
+      if (!idParam) { res.writeHead(400); return res.end('missing id'); }
+      const limitParam = url.searchParams.get('limit');
+      const offsetParam = url.searchParams.get('offset');
+      const id = Number(idParam);
+      if (!Number.isFinite(id) || id <= 0) { res.writeHead(400); return res.end('invalid id'); }
+      const offset = offsetParam ? Number(offsetParam) : 0;
+      if (!Number.isFinite(offset) || offset < 0) { res.writeHead(400); return res.end('invalid offset'); }
+      const sParam = url.searchParams.get('s');
+      const s = sParam ? Number(sParam) : 8;
+
+      const mod = await import('NeteaseCloudMusicApi');
+      const apiDetail = mod.playlist_detail || (mod.default && mod.default.playlist_detail);
+      const apiSongDetail = mod.song_detail || (mod.default && mod.default.song_detail);
+      if (!apiDetail || !apiSongDetail) { res.writeHead(500); return res.end('playlist detail unavailable'); }
+
+      const detailRes = await apiDetail({ id, n: 100000, s });
+      const trackIds = detailRes && detailRes.body && detailRes.body.playlist && Array.isArray(detailRes.body.playlist.trackIds)
+        ? detailRes.body.playlist.trackIds
+        : [];
+
+      let limit = Number.parseInt(limitParam || '', 10);
+      if (!Number.isFinite(limit) || limit <= 0) limit = 1000;
+
+      const slice = trackIds.slice(offset, offset + limit).map((item) => item && item.id).filter(Boolean);
+      if (!slice.length) {
+        const body = JSON.stringify({ songs: [], privileges: [], code: 200 });
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true' });
+        return res.end(body);
+      }
+
+      const songs = [];
+      const privileges = [];
+      const batchSize = 1000;
+      for (let i = 0; i < slice.length; i += batchSize) {
+        const chunk = slice.slice(i, i + batchSize);
+        const songRes = await apiSongDetail({ ids: chunk.join(',') });
+        const body = songRes && songRes.body ? songRes.body : songRes;
+        if (body && Array.isArray(body.songs)) songs.push(...body.songs);
+        if (body && Array.isArray(body.privileges)) privileges.push(...body.privileges);
+      }
+
+      const payload = { songs, privileges, code: 200, total: trackIds.length };
+      const body = JSON.stringify(payload);
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true' });
+      return res.end(body);
+    } catch (e) {
+      console.error('[API] playlist track all error', e && e.message ? e.message : e);
+      res.writeHead(500); return res.end('playlist track all error');
+    }
+  }
+
   // default 404 for API
   res.writeHead(404, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true' });
   res.end('Not Found');
 });
 
-apiServer.listen(API_PORT, () => {
-  console.log(`API server running on port ${API_PORT}`);
-});
+(async () => {
+  await bootstrapLockedRooms();
+  apiServer.listen(API_PORT, () => {
+    console.log(`API server running on port ${API_PORT}`);
+  });
 
-httpServer.listen(PORT, () => {
-  console.log(`Socket.IO server running on port ${PORT}`);
-});
+  httpServer.listen(PORT, () => {
+    console.log(`Socket.IO server running on port ${PORT}`);
+  });
+})();

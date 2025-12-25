@@ -1,18 +1,7 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
 import Link from "next/link";
 import Header from './Header.client';
 import "./globals.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: "Create Next App",
@@ -27,15 +16,26 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className="antialiased app-body"
       >
-        <header className="w-full border-b bg-white/50">
-          <div className="mx-auto max-w-6xl flex items-center justify-between px-6 py-3">
-            <a className="text-lg font-semibold" href="/">共享音乐</a>
-            <Header />
-          </div>
-        </header>
-        <main>{children}</main>
+        <div className="app-shell">
+          <header className="site-header">
+            <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4">
+              <Link className="brand" href="/">
+                <span className="brand-mark" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" role="img" aria-hidden="true">
+                    <path d="M12 5v9" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                    <path d="M12 5c3 1.2 4.5 2.6 4.5 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                    <circle cx="10.2" cy="17.3" r="2.2" fill="none" stroke="currentColor" strokeWidth="1.6" />
+                  </svg>
+                </span>
+                <span>共享音乐</span>
+              </Link>
+              <Header />
+            </div>
+          </header>
+          <main>{children}</main>
+        </div>
       </body>
     </html>
   );

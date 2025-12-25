@@ -18,15 +18,16 @@ export default function RegisterPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password }),
       });
-      const data = await res.json().catch(() => null);
+      const raw = await res.text();
+      const data = raw ? (() => { try { return JSON.parse(raw); } catch (_) { return null; } })() : null;
       if (!res.ok) {
-        setMsg('Register failed');
+        setMsg((raw && raw.trim()) || 'Register failed');
         return;
       }
       if (data && data.preview) {
-        setMsg('Registered. Preview email: ' + data.preview);
+        setMsg('注册成功。验证邮件预览：' + data.preview);
       } else {
-        setMsg('Registered. Check your email to verify.');
+        setMsg('注册成功，请查收邮箱并完成验证。');
       }
     } catch (e) {
       setMsg('Network error');
@@ -34,17 +35,28 @@ export default function RegisterPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center">
-      <form className="w-full max-w-md bg-white p-6 rounded shadow" onSubmit={submit}>
-        <h2 className="text-xl font-medium mb-4">注册</h2>
-        {msg && <div className="mb-2 text-zinc-700">{msg}</div>}
-        <label className="block text-sm">邮箱</label>
-        <input className="w-full border p-2 mb-3" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <label className="block text-sm">密码</label>
-        <input type="password" className="w-full border p-2 mb-4" value={password} onChange={(e) => setPassword(e.target.value)} />
-        <div className="flex gap-2">
-          <button className="px-4 py-2 bg-green-600 text-white">注册</button>
-          <a href="/login" className="px-4 py-2 bg-gray-200">登录</a>
+    <div className="page-container flex min-h-[70vh] items-center justify-center">
+      <form className="glass-card w-full max-w-md space-y-4" onSubmit={submit}>
+        <div className="space-y-2">
+          <p className="kicker">create account</p>
+          <h2 className="hero-title text-2xl">注册</h2>
+          <p className="muted text-sm">注册后即可创建你的音乐房间。</p>
+        </div>
+        {msg && <div className="text-sm text-slate-200">{msg}</div>}
+        <div>
+          <label className="text-xs uppercase tracking-[0.2em] text-slate-400">邮箱</label>
+          <input className="input-field mt-2" value={email} onChange={(e) => setEmail(e.target.value)} />
+        </div>
+        <div>
+          <label className="text-xs uppercase tracking-[0.2em] text-slate-400">密码</label>
+          <input type="password" className="input-field mt-2" value={password} onChange={(e) => setPassword(e.target.value)} />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button className="btn-primary" type="submit">注册</button>
+        </div>
+        <div className="flex justify-end text-xs text-slate-500">
+          <span>已有账号？</span>
+          <a href="/login" className="ml-2 text-slate-400 hover:text-slate-200">去登录</a>
         </div>
       </form>
     </div>

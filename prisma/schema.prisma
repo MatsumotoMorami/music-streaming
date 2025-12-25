@@ -25,4 +25,7 @@ model Room {
   playlist     String? @default("[]")
   playMode     String  @default("sequence")
   currentIndex Int     @default(0)
+  locked       Boolean @default(false)
+  visibility   String  @default("public")
+  passwordHash String?
 }

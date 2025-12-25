@@ -110,12 +110,12 @@ export default function Header() {
       {user ? (
         <>
           {profile && profile.avatar ? (
-            <img src={profile.avatar} alt="avatar" className="w-8 h-8 rounded mr-2" />
+            <img src={profile.avatar} alt="avatar" className="h-9 w-9 rounded-xl border border-white/10 object-cover" />
           ) : (
-            <img src={makeAvatar(profile?.nickname || user.email)} alt="avatar" className="w-8 h-8 rounded mr-2" />
+            <img src={makeAvatar(profile?.nickname || user.email)} alt="avatar" className="h-9 w-9 rounded-xl border border-white/10" />
           )}
-          <span className="text-sm text-gray-700">{profile?.nickname || user.email}</span>
-          <a href="/profile" className="px-3 py-1 ml-2 rounded bg-gray-100 text-gray-700">个人资料</a>
+          <span className="hidden text-sm text-slate-200 md:inline">{profile?.nickname || user.email}</span>
+          <a href="/profile" className="btn-secondary">个人资料</a>
           <button
             onClick={async () => {
               try {
@@ -126,13 +126,13 @@ export default function Header() {
               // reload to ensure app state resets
               window.location.href = window.location.origin;
             }}
-            className="px-3 py-1 rounded bg-red-600 text-white"
-          >Logout</button>
+            className="btn-danger"
+          >登出</button>
         </>
       ) : (
         <>
-          <Link href="/login" className="px-3 py-1 rounded bg-blue-600 text-white">登录</Link>
-          <Link href="/register" className="px-3 py-1 rounded bg-green-600 text-white">注册</Link>
+          <Link href="/login" className="btn-secondary">登录</Link>
+          <Link href="/register" className="btn-primary">注册</Link>
         </>
       )}
     </nav>

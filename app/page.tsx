@@ -78,72 +78,102 @@ export default function Home() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-50 p-6 text-sans">
-      <div className="mx-auto max-w-3xl bg-white p-6 rounded shadow">
-        <h1 className="text-2xl font-semibold mb-4 text-black">房间列表</h1>
-
-        <div className="mb-4">
-          <button onClick={() => setShowCreateForm((v) => !v)} className="px-4 py-2 bg-blue-600 text-white rounded">新建房间</button>
-          {showCreateForm && (
-            <div className="mt-3 p-3 border rounded">
-              <div>
-                <label className="block text-sm">可见性</label>
-                <select value={createVisibility} onChange={(e) => setCreateVisibility(e.target.value as any)} className="mt-1 border p-2">
-                  <option value="public">公开</option>
-                  <option value="private">私密（需要密码）</option>
-                </select>
-              </div>
-              {createVisibility === 'private' && (
-                <div className="mt-2">
-                  <label className="block text-sm">房间密码</label>
-                  <input value={createPassword} onChange={(e) => setCreatePassword(e.target.value)} className="mt-1 w-full border p-2" type="password" />
-                </div>
-              )}
-              <div className="mt-3 flex gap-2">
-                <button onClick={createRoom} className="px-3 bg-indigo-600 text-white">创建并进入</button>
-                <button onClick={() => setShowCreateForm(false)} className="px-3 bg-gray-200">取消</button>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="mb-4">
-          <label className="block text-sm">输入房间 ID 并前往</label>
-          <div className="flex gap-2 mt-1">
-            <input value={newId} onChange={(e) => setNewId(e.target.value)} className="flex-1 border p-2" />
-            <button onClick={() => goToRoom()} className="px-3 bg-green-600 text-white">进入</button>
+    <div className="page-container space-y-8">
+      <section className="hero-card">
+        <div className="flex flex-col gap-6 md:flex-row md:items-center md:justify-between">
+          <div className="space-y-3">
+            <p className="kicker">live sync rooms</p>
+            <h1 className="hero-title">共享音乐房间</h1>
+            <p className="hero-subtitle">
+              创建私密或公开房间，让同一首歌在所有人的设备上同步播放。
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <button onClick={createRoom} className="btn-primary">
+              新建房间
+            </button>
           </div>
         </div>
+      </section>
 
-        <div>
-          <div className="text-sm font-medium mb-2">可加入的房间</div>
-          <ul className="divide-y">
-            {rooms.length === 0 && <li className="p-2 text-sm text-zinc-600">暂无房间（可以新建）</li>}
-            {rooms.map((r: any) => (
-              <li key={r.id} className="p-2 flex items-center justify-between">
-                <div>
-                  <div className="font-medium">{r.id} {r.visibility === 'private' ? <span className="ml-2 text-xs px-2 py-0.5 bg-yellow-100 text-yellow-800 rounded">私密</span> : null}</div>
-                  <div className="text-sm text-zinc-600">{r.members} 人在线</div>
-                </div>
-                <div>
-                  <button disabled={!!r.joined} onClick={() => goToRoom(r.id)} className={`px-3 py-1 ${r.joined ? 'bg-gray-300' : 'bg-blue-600'} text-white rounded`}>
+      <div className="grid gap-6 lg:grid-cols-2">
+        <section className="glass-card space-y-4">
+          <div className="section-title">创建新房间</div>
+          <p className="muted text-sm">选择房间可见性，私密房间需要密码。</p>
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs uppercase tracking-[0.2em] text-slate-400">可见性</label>
+              <select value={createVisibility} onChange={(e) => setCreateVisibility(e.target.value as any)} className="select-field mt-2">
+                <option value="public">公开</option>
+                <option value="private">私密（需要密码）</option>
+              </select>
+            </div>
+            {createVisibility === 'private' && (
+              <div>
+                <label className="text-xs uppercase tracking-[0.2em] text-slate-400">房间密码</label>
+                <input value={createPassword} onChange={(e) => setCreatePassword(e.target.value)} className="input-field mt-2" type="password" />
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <button onClick={createRoom} className="btn-primary">创建并进入</button>
+            </div>
+          </div>
+        </section>
+
+        <section className="glass-card space-y-4">
+          <div className="section-title">加入房间</div>
+          <div>
+            <label className="text-xs uppercase tracking-[0.2em] text-slate-400">输入房间 ID</label>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <input value={newId} onChange={(e) => setNewId(e.target.value)} className="input-field flex-1" />
+              <button onClick={() => goToRoom()} className="btn-primary">进入</button>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <div className="section-title">可加入的房间</div>
+            <div className="space-y-2">
+              {rooms.length === 0 && <div className="muted text-sm">暂无房间（可以新建）</div>}
+              {rooms.map((r: any) => (
+                <div key={r.id} className="list-row">
+                  <div>
+                    <div className="font-medium">
+                      {r.id}
+                      {r.visibility === 'private' ? (
+                        <span className="ml-2 pill gap-1">
+                          <svg className="h-3 w-3" viewBox="0 0 24 24" aria-hidden="true">
+                            <path d="M7 11V8a5 5 0 0110 0v3" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                            <rect x="6.5" y="11" width="11" height="9" rx="2" ry="2" fill="none" stroke="currentColor" strokeWidth="1.6" />
+                          </svg>
+                          <span>私密</span>
+                        </span>
+                      ) : null}
+                      {r.locked ? <span className="ml-2 pill">锁定</span> : null}
+                    </div>
+                    <div className="muted text-sm">{r.members} 人在线</div>
+                  </div>
+                  <button
+                    disabled={!!r.joined}
+                    onClick={() => goToRoom(r.id)}
+                    className={r.joined ? 'btn-secondary' : 'btn-primary'}
+                  >
                     {r.joined ? '已在房间' : '加入'}
                   </button>
                 </div>
-              </li>
-            ))}
-          </ul>
-        </div>
+              ))}
+            </div>
+          </div>
+        </section>
       </div>
+
       {/* Join password modal */}
       {joinPrompt.open && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center">
-          <div className="bg-white p-4 rounded shadow max-w-md w-full">
-            <h3 className="font-medium mb-2">请输入房间密码</h3>
-            <input value={joinPassword} onChange={(e) => setJoinPassword(e.target.value)} type="password" className="w-full border p-2" />
-            <div className="mt-3 flex gap-2 justify-end">
-              <button onClick={() => setJoinPrompt({ open: false })} className="px-3 bg-gray-200">取消</button>
-                  <button onClick={() => {
+        <div className="fixed inset-0 flex items-center justify-center modal-backdrop px-4">
+          <div className="modal-card w-full max-w-md space-y-3">
+            <h3 className="section-title">请输入房间密码</h3>
+            <input value={joinPassword} onChange={(e) => setJoinPassword(e.target.value)} type="password" className="input-field" />
+            <div className="flex flex-wrap gap-2 justify-end">
+              <button onClick={() => setJoinPrompt({ open: false })} className="btn-secondary">取消</button>
+              <button onClick={() => {
                 const rid = joinPrompt.roomId;
                 const s = (window as any).__roomsSocket;
                 if (!rid) return;
@@ -164,7 +194,7 @@ export default function Home() {
                 } else {
                   try { alert('无法连接到实时服务器，无法加入房间，请稍后重试'); } catch (_) {}
                 }
-              }} className="px-3 bg-blue-600 text-white">提交并加入</button>
+              }} className="btn-primary">提交并加入</button>
             </div>
           </div>
         </div>

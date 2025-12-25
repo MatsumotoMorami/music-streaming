@@ -45,17 +45,28 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center">
-      <form className="w-full max-w-md bg-white p-6 rounded shadow" onSubmit={submit}>
-        <h2 className="text-xl font-medium mb-4">登录</h2>
-        {error && <div className="mb-2 text-red-600">{error}</div>}
-        <label className="block text-sm">邮箱</label>
-        <input className="w-full border p-2 mb-3" value={email} onChange={(e) => setEmail(e.target.value)} />
-        <label className="block text-sm">密码</label>
-        <input type="password" className="w-full border p-2 mb-4" value={password} onChange={(e) => setPassword(e.target.value)} />
-        <div className="flex gap-2">
-          <button className="px-4 py-2 bg-blue-600 text-white">登录</button>
-          <a href="/register" className="px-4 py-2 bg-gray-200">注册</a>
+    <div className="page-container flex min-h-[70vh] items-center justify-center">
+      <form className="glass-card w-full max-w-md space-y-4" onSubmit={submit}>
+        <div className="space-y-2">
+          <p className="kicker">welcome back</p>
+          <h2 className="hero-title text-2xl">登录</h2>
+          <p className="muted text-sm">使用账号进入实时音乐房间。</p>
+        </div>
+        {error && <div className="text-sm text-rose-200">{error}</div>}
+        <div>
+          <label className="text-xs uppercase tracking-[0.2em] text-slate-400">邮箱</label>
+          <input className="input-field mt-2" value={email} onChange={(e) => setEmail(e.target.value)} />
+        </div>
+        <div>
+          <label className="text-xs uppercase tracking-[0.2em] text-slate-400">密码</label>
+          <input type="password" className="input-field mt-2" value={password} onChange={(e) => setPassword(e.target.value)} />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button className="btn-primary" type="submit">登录</button>
+        </div>
+        <div className="flex justify-end text-xs text-slate-500">
+          <span>没有账号？</span>
+          <a href="/register" className="ml-2 text-slate-400 hover:text-slate-200">去注册</a>
         </div>
       </form>
     </div>

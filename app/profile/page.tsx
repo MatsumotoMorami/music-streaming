@@ -103,59 +103,63 @@ export default function ProfilePage() {
     } finally { setSaving(false); }
   }
 
-  if (loading) return <div className="p-6">加载中…</div>;
-  if (!profile) return <div className="p-6">未登录</div>;
+  if (loading) return <div className="page-container">加载中…</div>;
+  if (!profile) return <div className="page-container">未登录</div>;
 
   return (
-    <div className="min-h-screen p-6">
-      <div className="mx-auto max-w-2xl bg-white p-6 rounded shadow">
-        <h1 className="text-xl font-semibold mb-4">用户信息</h1>
+    <div className="page-container">
+      <div className="glass-card mx-auto max-w-2xl space-y-4">
+        <div className="space-y-2">
+          <p className="kicker">profile</p>
+          <h1 className="hero-title text-2xl">用户信息</h1>
+          <p className="muted text-sm">更新你的昵称、简介和头像。</p>
+        </div>
         <form onSubmit={handleSave} className="space-y-4">
           <div>
-            <label className="block text-sm">邮箱（不可修改）</label>
-            <div className="mt-1">{profile.email}</div>
+            <label className="text-xs uppercase tracking-[0.2em] text-slate-400">邮箱（不可修改）</label>
+            <div className="mt-2 text-slate-100">{profile.email}</div>
           </div>
 
           <div>
-            <label className="block text-sm">昵称</label>
-            <input className="w-full border p-2 mt-1" value={profile.nickname || ''} onChange={(e) => setProfile({ ...(profile||{}), nickname: e.target.value })} />
+            <label className="text-xs uppercase tracking-[0.2em] text-slate-400">昵称</label>
+            <input className="input-field mt-2" value={profile.nickname || ''} onChange={(e) => setProfile({ ...(profile||{}), nickname: e.target.value })} />
           </div>
 
           <div>
-            <label className="block text-sm">简介</label>
-            <textarea className="w-full border p-2 mt-1" value={profile.bio || ''} onChange={(e) => setProfile({ ...(profile||{}), bio: e.target.value })} />
+            <label className="text-xs uppercase tracking-[0.2em] text-slate-400">简介</label>
+            <textarea className="textarea-field mt-2" value={profile.bio || ''} onChange={(e) => setProfile({ ...(profile||{}), bio: e.target.value })} />
           </div>
 
           <div>
-            <label className="block text-sm">头像</label>
-            <div className="flex items-center gap-4 mt-2">
-                  {avatarPreview ? (
-                    <img src={avatarPreview} alt="avatar-preview" className="w-20 h-20 rounded" />
-                  ) : profile.avatar ? (
-                    <img src={profile.avatar} alt="avatar" className="w-20 h-20 rounded" />
-                  ) : (
-                    <img src={makeAvatarDataUrl(profile.nickname || profile.email)} alt="avatar" className="w-20 h-20 rounded" />
-                  )}
-                  <input type="file" accept="image/*" onChange={(e) => {
-                    const f = e.target.files ? e.target.files[0] : null;
-                    setAvatarFile(f);
-                    if (f) {
-                      const url = URL.createObjectURL(f);
-                      setAvatarPreview(url);
-                    } else {
-                      setAvatarPreview(null);
-                    }
-                  }} />
+            <label className="text-xs uppercase tracking-[0.2em] text-slate-400">头像</label>
+            <div className="mt-2 flex flex-wrap items-center gap-4">
+              {avatarPreview ? (
+                <img src={avatarPreview} alt="avatar-preview" className="h-20 w-20 rounded-2xl border border-white/10 object-cover" />
+              ) : profile.avatar ? (
+                <img src={profile.avatar} alt="avatar" className="h-20 w-20 rounded-2xl border border-white/10 object-cover" />
+              ) : (
+                <img src={makeAvatarDataUrl(profile.nickname || profile.email)} alt="avatar" className="h-20 w-20 rounded-2xl border border-white/10" />
+              )}
+              <input type="file" accept="image/*" className="text-sm text-slate-300" onChange={(e) => {
+                const f = e.target.files ? e.target.files[0] : null;
+                setAvatarFile(f);
+                if (f) {
+                  const url = URL.createObjectURL(f);
+                  setAvatarPreview(url);
+                } else {
+                  setAvatarPreview(null);
+                }
+              }} />
             </div>
           </div>
 
           <div>
-            <label className="block text-sm">修改密码（留空则不变）</label>
-            <input type="password" className="w-full border p-2 mt-1" value={password} onChange={(e) => setPassword(e.target.value)} />
+            <label className="text-xs uppercase tracking-[0.2em] text-slate-400">修改密码（留空则不变）</label>
+            <input type="password" className="input-field mt-2" value={password} onChange={(e) => setPassword(e.target.value)} />
           </div>
 
           <div>
-            <button disabled={saving} className="px-4 py-2 bg-blue-600 text-white">{saving ? '保存中…' : '保存'}</button>
+            <button disabled={saving} className="btn-primary">{saving ? '保存中…' : '保存'}</button>
           </div>
         </form>
       </div>
