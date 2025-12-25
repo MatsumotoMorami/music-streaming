@@ -36,6 +36,10 @@ jobs:
           key: ${{ secrets.DEPLOY_KEY }}
           script: |
             set -e
+            if [ ! -d "$APP_DIR/.git" ]; then
+              mkdir -p "$APP_DIR"
+              git clone --branch main git@github.com:MatsumotoMorami/music-streaming.git "$APP_DIR"
+            fi
             cd "$APP_DIR"
-            git pull
+            git pull origin main
             docker compose up -d --build
