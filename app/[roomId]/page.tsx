@@ -442,8 +442,8 @@ export default function RoomPage() {
         }
         totalImported += songs.length;
         setImportStatus(`已导入 ${totalImported}${total ? ` / ${total}` : ''} 首歌曲`);
-        currentOffset += batchSize;
-        if (songs.length < batchSize) break;
+        currentOffset += songs.length;
+        if (songs.length === 0) break;
         if (total !== null && currentOffset >= total) break;
       }
       if (totalImported > 0) setImportPlaylistId('');

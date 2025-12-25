@@ -6,23 +6,7 @@ on:
       - main
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - run: npm ci
-      - run: npm run lint
-      - run: npm run build
-        env:
-          NEXT_FORCE_WEBPACK: 1
-          NEXT_TELEMETRY_DISABLED: 1
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
     steps:
       - name: Deploy over SSH
