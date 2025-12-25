@@ -1045,7 +1045,8 @@ const apiServer = createServer(async (req, res) => {
   res.end('Not Found');
 });
 
-(async () => {
+ (async () => {
+  await ensureDb();
   await bootstrapLockedRooms();
   apiServer.listen(API_PORT, () => {
     console.log(`API server running on port ${API_PORT}`);
@@ -1055,3 +1056,33 @@ const apiServer = createServer(async (req, res) => {
     console.log(`Socket.IO server running on port ${PORT}`);
   });
 })();
+async function ensureDb() {
+  try {
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "User" (
+        "email" TEXT PRIMARY KEY,
+        "passwordHash" TEXT NOT NULL,
+        "verified" BOOLEAN NOT NULL DEFAULT 0,
+        "verifyToken" TEXT,
+        "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "nickname" TEXT,
+        "bio" TEXT,
+        "avatar" TEXT
+      );
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "Room" (
+        "id" TEXT PRIMARY KEY,
+        "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "playlist" TEXT DEFAULT '[]',
+        "playMode" TEXT NOT NULL DEFAULT 'sequence',
+        "currentIndex" INTEGER NOT NULL DEFAULT 0,
+        "locked" BOOLEAN NOT NULL DEFAULT 0,
+        "visibility" TEXT NOT NULL DEFAULT 'public',
+        "passwordHash" TEXT
+      );
+    `);
+  } catch (e) {
+    console.error('[bootstrap] failed to ensure db tables', e && e.message ? e.message : e);
+  }
+}
