@@ -1,8 +1,14 @@
-FROM node:18-bullseye-slim
+FROM node:20-bullseye-slim
 
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends libssl1.1 ca-certificates \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+  libssl1.1 \
+  ca-certificates \
+  python3 \
+  make \
+  g++ \
   && rm -rf /var/lib/apt/lists/*
+ENV PYTHON=/usr/bin/python3
 COPY package.json package-lock.json ./
 RUN npm ci
 

@@ -45,4 +45,5 @@ jobs:
             fi
             cd "$APP_DIR"
             git pull origin main
+            docker compose build --no-cache server
             docker compose up -d --build
