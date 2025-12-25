@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile.web
     ports:
-      - "3000:3000"
+      - "14569:3000"
     environment:
       NODE_ENV: production
     depends_on:
@@ -15,8 +15,8 @@ services:
       context: .
       dockerfile: Dockerfile.server
     ports:
-      - "4000:4000"
-      - "4001:4001"
+      - "14570:4000"
+      - "14571:4001"
     environment:
       NODE_ENV: production
       PORT: 4000
