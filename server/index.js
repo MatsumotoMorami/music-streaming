@@ -5,7 +5,7 @@ import { Server } from 'socket.io';
 import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcryptjs';
-import nodemailer from 'nodemailer';
+import { Resend } from 'resend';
 import jwt from 'jsonwebtoken';
 import cookie from 'cookie';
 import { PrismaClient } from '@prisma/client';
@@ -23,32 +23,26 @@ const prisma = new PrismaClient();
 
 // NOTE: users are now stored in SQLite via Prisma. previous JSON file is not migrated.
 
-// nodemailer transport (use SMTP env or ethereal for dev)
-let mailerPromise = null;
-async function getTransport() {
-  if (mailerPromise) return mailerPromise;
-  if (process.env.SMTP_HOST && process.env.SMTP_PORT) {
-    mailerPromise = nodemailer.createTransport({
-      host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT),
-      secure: process.env.SMTP_SECURE === 'true',
-      auth: process.env.SMTP_USER ? { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS } : undefined,
-      logger: true,
-      debug: true,
-    });
-    return mailerPromise;
+// Resend client (requires RESEND_API_KEY)
+const resend = new Resend(process.env.RESEND_API_KEY || '');
+const RESEND_FROM = process.env.RESEND_FROM || process.env.SMTP_FROM || process.env.SMTP_USER || 'no-reply@example.com';
+
+async function sendEmail({ to, subject, html, text }) {
+  if (!process.env.RESEND_API_KEY) {
+    throw new Error('RESEND_API_KEY is not set');
   }
-  // fallback: ethereal test account
-  const testAccount = await nodemailer.createTestAccount();
-  mailerPromise = nodemailer.createTransport({
-    host: 'smtp.ethereal.email',
-    port: 587,
-    secure: false,
-    auth: { user: testAccount.user, pass: testAccount.pass },
-    logger: true,
-    debug: true,
+  const { data, error } = await resend.emails.send({
+    from: RESEND_FROM,
+    to: Array.isArray(to) ? to : [to],
+    subject,
+    html,
+    text,
   });
-  return mailerPromise;
+  if (error) {
+    const message = error && error.message ? error.message : JSON.stringify(error);
+    throw new Error(message || 'Resend error');
+  }
+  return data;
 }
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-please-change';
@@ -742,9 +736,7 @@ const apiServer = createServer(async (req, res) => {
       // send verification email asynchronously and log preview or errors
       (async () => {
         try {
-          const transport = await getTransport();
           const verifyUrl = `${VERIFY_URL_BASE}/api/verify?token=${verifyToken}`;
-          const mailFrom = process.env.SMTP_FROM || process.env.SMTP_USER || 'no-reply@example.com';
           const subject = '【共享音乐】请验证你的邮箱';
           const text = [
             '你好，',
@@ -768,9 +760,9 @@ const apiServer = createServer(async (req, res) => {
               </div>
             </div>
           `;
-          const info = await transport.sendMail({ from: mailFrom, to: email, subject, text, html, envelope: { from: mailFrom, to: email } });
-          const preview = nodemailer.getTestMessageUrl ? nodemailer.getTestMessageUrl(info) : null;
-          console.log('[API] verification email sent, preview:', preview);
+          const data = await sendEmail({ to: email, subject, text, html });
+          const id = data && data.id ? data.id : null;
+          console.log('[API] verification email sent', id ? { id } : data || {});
         } catch (err) {
           console.error('[API] verification email error', err && err.message ? err.message : err);
         }
@@ -935,14 +927,15 @@ const apiServer = createServer(async (req, res) => {
       if (u.verified) { res.writeHead(400); return res.end('Already verified'); }
 
       try {
-        const transport = await getTransport();
         const verifyUrl = `${VERIFY_URL_BASE}/api/verify?token=${u.verifyToken}`;
-        const mailFrom = process.env.SMTP_FROM || process.env.SMTP_USER || 'no-reply@example.com';
-        const info = await transport.sendMail({ from: mailFrom, to: email, subject: 'Verify your account', text: `Verify: ${verifyUrl}`, html: `<a href="${verifyUrl}">Verify</a>`, envelope: { from: mailFrom, to: email } });
-        const preview = nodemailer.getTestMessageUrl ? nodemailer.getTestMessageUrl(info) : null;
-        console.log('[API] resend verification email preview:', preview);
+        const subject = 'Verify your account';
+        const text = `Verify: ${verifyUrl}`;
+        const html = `<a href="${verifyUrl}">Verify</a>`;
+        const data = await sendEmail({ to: email, subject, text, html });
+        const id = data && data.id ? data.id : null;
+        console.log('[API] resend verification email sent', id ? { id } : data || {});
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true' });
-        return res.end(JSON.stringify({ ok: true, preview }));
+        return res.end(JSON.stringify({ ok: true, id }));
       } catch (err) {
         console.error('[API] resend email error', err && err.message ? err.message : err);
         res.writeHead(500); return res.end('send error');

@@ -11,11 +11,15 @@ jobs:
     steps:
       - name: Deploy over SSH
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_FROM: ${{ vars.RESEND_FROM }}
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           port: ${{ secrets.DEPLOY_PORT }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_KEY }}
+          envs: RESEND_API_KEY,RESEND_FROM
           script: |
             set -e
             APP_DIR="${{ secrets.DEPLOY_PATH }}"
@@ -29,5 +33,25 @@ jobs:
             fi
             cd "$APP_DIR"
             git pull origin main
+            if [ -z "$RESEND_API_KEY" ]; then
+              echo "RESEND_API_KEY is empty"
+              exit 1
+            fi
+            upsert_env() {
+              key="$1"
+              val="$2"
+              file=".env"
+              tmp="$(mktemp)"
+              if [ -f "$file" ]; then
+                awk -v k="$key" -v v="$val" 'BEGIN{found=0} $0 ~ "^"k"=" {print k"="v; found=1; next} {print} END{if(!found) print k"="v}' "$file" > "$tmp"
+              else
+                printf "%s=%s\n" "$key" "$val" > "$tmp"
+              fi
+              mv "$tmp" "$file"
+            }
+            upsert_env "RESEND_API_KEY" "$RESEND_API_KEY"
+            if [ -n "$RESEND_FROM" ]; then
+              upsert_env "RESEND_FROM" "$RESEND_FROM"
+            fi
             docker compose build --no-cache server
             docker compose up -d --build
