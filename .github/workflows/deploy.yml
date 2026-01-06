@@ -53,5 +53,4 @@ jobs:
             if [ -n "$RESEND_FROM" ]; then
               upsert_env "RESEND_FROM" "$RESEND_FROM"
             fi
-            docker compose build --no-cache server
             docker compose up -d --build
