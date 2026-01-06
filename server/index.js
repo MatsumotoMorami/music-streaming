@@ -679,6 +679,48 @@ setInterval(() => {
 const API_PORT = process.env.API_PORT || 4001;
 const VERIFY_URL_BASE = process.env.VERIFY_URL_BASE || `http://localhost:${API_PORT}`;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+
+function makeVerifyToken() {
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+function buildVerifyEmail(verifyUrl) {
+  const subject = '【共享音乐】请验证你的邮箱';
+  const text = [
+    '你好，',
+    '',
+    '感谢注册共享音乐。请在 24 小时内完成邮箱验证：',
+    verifyUrl,
+    '',
+    '如果你没有进行注册，请忽略此邮件。',
+    '此邮件为系统自动发送，请勿直接回复。',
+  ].join('\n');
+  const html = `
+    <div style="font-family:Segoe UI,Arial,sans-serif;background:#0b0f1d;color:#e2e8f0;padding:24px;">
+      <div style="max-width:520px;margin:0 auto;background:#10162b;border:1px solid rgba(148,163,184,.25);border-radius:16px;padding:24px;">
+        <h2 style="margin:0 0 12px;font-size:20px;">请验证你的邮箱</h2>
+        <p style="margin:0 0 12px;color:#cbd5f5;">你好，感谢注册共享音乐。请在 24 小时内完成邮箱验证：</p>
+        <a href="${verifyUrl}" style="display:inline-block;margin:12px 0;padding:10px 16px;border-radius:999px;background:#5ef4c1;color:#07131f;text-decoration:none;font-weight:600;">验证邮箱</a>
+        <p style="margin:12px 0;color:#94a3b8;font-size:12px;">如果按钮无法点击，请复制以下链接到浏览器打开：</p>
+        <p style="margin:0;color:#7aa7ff;font-size:12px;word-break:break-all;">${verifyUrl}</p>
+        <hr style="border:none;border-top:1px solid rgba(148,163,184,.2);margin:16px 0;">
+        <p style="margin:0;color:#94a3b8;font-size:12px;">如果你没有进行注册，请忽略此邮件。此邮件为系统自动发送，请勿直接回复。</p>
+      </div>
+    </div>
+  `;
+  return { subject, text, html };
+}
+
+async function sendVerificationEmail(email, verifyToken, logPrefix = '') {
+  const verifyUrl = `${VERIFY_URL_BASE}/api/verify?token=${verifyToken}`;
+  const { subject, text, html } = buildVerifyEmail(verifyUrl);
+  const data = await sendEmail({ to: email, subject, text, html });
+  const id = data && data.id ? data.id : null;
+  const prefix = logPrefix ? `${logPrefix} ` : '';
+  console.log(`[API] ${prefix}verification email sent`, id ? { id } : data || {});
+  return data;
+}
+
 const apiServer = createServer(async (req, res) => {
   console.log(`[API] ${req.method} ${req.url}`);
   // Ensure CORS headers are always present so browser can read error responses
@@ -724,9 +766,26 @@ const apiServer = createServer(async (req, res) => {
       const { email, password } = body;
       if (!email || !password) { res.writeHead(400); return res.end('Missing'); }
       const existing = await prisma.user.findUnique({ where: { email } });
-      if (existing) { res.writeHead(409); return res.end('User exists'); }
+      if (existing) {
+        if (existing.verified) { res.writeHead(409); return res.end('User exists'); }
+
+        const verifyToken = makeVerifyToken();
+        await prisma.user.update({ where: { email }, data: { verifyToken } });
+
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true' });
+        res.end(JSON.stringify({ ok: true, resent: true }));
+
+        (async () => {
+          try {
+            await sendVerificationEmail(email, verifyToken, 'resend');
+          } catch (err) {
+            console.error('[API] verification email error', err && err.message ? err.message : err);
+          }
+        })();
+        return;
+      }
       const hash = await bcrypt.hash(password, 10);
-      const verifyToken = Math.random().toString(36).slice(2) + Date.now().toString(36);
+      const verifyToken = makeVerifyToken();
       await prisma.user.create({ data: { email, passwordHash: hash, verified: false, verifyToken } });
 
       // respond immediately so client isn't blocked by SMTP/network delays
@@ -736,33 +795,7 @@ const apiServer = createServer(async (req, res) => {
       // send verification email asynchronously and log preview or errors
       (async () => {
         try {
-          const verifyUrl = `${VERIFY_URL_BASE}/api/verify?token=${verifyToken}`;
-          const subject = '【共享音乐】请验证你的邮箱';
-          const text = [
-            '你好，',
-            '',
-            '感谢注册共享音乐。请在 24 小时内完成邮箱验证：',
-            verifyUrl,
-            '',
-            '如果你没有进行注册，请忽略此邮件。',
-            '此邮件为系统自动发送，请勿直接回复。',
-          ].join('\n');
-          const html = `
-            <div style="font-family:Segoe UI,Arial,sans-serif;background:#0b0f1d;color:#e2e8f0;padding:24px;">
-              <div style="max-width:520px;margin:0 auto;background:#10162b;border:1px solid rgba(148,163,184,.25);border-radius:16px;padding:24px;">
-                <h2 style="margin:0 0 12px;font-size:20px;">请验证你的邮箱</h2>
-                <p style="margin:0 0 12px;color:#cbd5f5;">你好，感谢注册共享音乐。请在 24 小时内完成邮箱验证：</p>
-                <a href="${verifyUrl}" style="display:inline-block;margin:12px 0;padding:10px 16px;border-radius:999px;background:#5ef4c1;color:#07131f;text-decoration:none;font-weight:600;">验证邮箱</a>
-                <p style="margin:12px 0;color:#94a3b8;font-size:12px;">如果按钮无法点击，请复制以下链接到浏览器打开：</p>
-                <p style="margin:0;color:#7aa7ff;font-size:12px;word-break:break-all;">${verifyUrl}</p>
-                <hr style="border:none;border-top:1px solid rgba(148,163,184,.2);margin:16px 0;">
-                <p style="margin:0;color:#94a3b8;font-size:12px;">如果你没有进行注册，请忽略此邮件。此邮件为系统自动发送，请勿直接回复。</p>
-              </div>
-            </div>
-          `;
-          const data = await sendEmail({ to: email, subject, text, html });
-          const id = data && data.id ? data.id : null;
-          console.log('[API] verification email sent', id ? { id } : data || {});
+          await sendVerificationEmail(email, verifyToken);
         } catch (err) {
           console.error('[API] verification email error', err && err.message ? err.message : err);
         }
@@ -927,13 +960,10 @@ const apiServer = createServer(async (req, res) => {
       if (u.verified) { res.writeHead(400); return res.end('Already verified'); }
 
       try {
-        const verifyUrl = `${VERIFY_URL_BASE}/api/verify?token=${u.verifyToken}`;
-        const subject = 'Verify your account';
-        const text = `Verify: ${verifyUrl}`;
-        const html = `<a href="${verifyUrl}">Verify</a>`;
-        const data = await sendEmail({ to: email, subject, text, html });
+        const verifyToken = makeVerifyToken();
+        await prisma.user.update({ where: { email }, data: { verifyToken } });
+        const data = await sendVerificationEmail(email, verifyToken, 'resend');
         const id = data && data.id ? data.id : null;
-        console.log('[API] resend verification email sent', id ? { id } : data || {});
         res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true' });
         return res.end(JSON.stringify({ ok: true, id }));
       } catch (err) {
