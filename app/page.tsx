@@ -78,6 +78,29 @@ export default function Home() {
     try { alert('无法连接到实时服务器，无法加入房间，请稍后重试'); } catch (_) {}
   }
 
+  function submitJoinPassword() {
+    const rid = joinPrompt.roomId;
+    const s = (window as any).__roomsSocket;
+    if (!rid) return;
+    if (s && s.connected) {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
+      // store join intent so room page auto-join can reuse the password and avoid double prompt
+      try { sessionStorage.setItem(`room_join:${rid}`, JSON.stringify({ password: joinPassword, name: 'Guest' })); } catch (e) {}
+      s.emit('join-room', { roomId: rid, name: 'Guest', token, password: joinPassword }, (resp: any) => {
+        if (resp && resp.ok) {
+          setJoinPrompt({ open: false });
+          setJoinPassword('');
+          router.push(`/${rid}`);
+        } else {
+          try { alert(resp?.message || '密码错误'); } catch(_) {}
+          try { sessionStorage.removeItem(`room_join:${rid}`); } catch (e) {}
+        }
+      });
+    } else {
+      try { alert('无法连接到实时服务器，无法加入房间，请稍后重试'); } catch (_) {}
+    }
+  }
+
   return (
     <div className="page-container space-y-8">
       <section className="hero-card">
@@ -126,7 +149,17 @@ export default function Home() {
           <div>
             <label className="text-xs uppercase tracking-[0.2em] text-slate-400">输入房间 ID</label>
             <div className="mt-2 flex flex-wrap gap-2">
-              <input value={newId} onChange={(e) => setNewId(e.target.value)} className="input-field flex-1" />
+              <input
+                value={newId}
+                onChange={(e) => setNewId(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                    e.preventDefault();
+                    goToRoom();
+                  }
+                }}
+                className="input-field flex-1"
+              />
               <button onClick={() => goToRoom()} className="btn-primary">进入</button>
             </div>
           </div>
@@ -171,31 +204,21 @@ export default function Home() {
         <div className="fixed inset-0 flex items-center justify-center modal-backdrop px-4">
           <div className="modal-card w-full max-w-md space-y-3">
             <h3 className="section-title">请输入房间密码</h3>
-            <input value={joinPassword} onChange={(e) => setJoinPassword(e.target.value)} type="password" className="input-field" />
+            <input
+              value={joinPassword}
+              onChange={(e) => setJoinPassword(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  submitJoinPassword();
+                }
+              }}
+              type="password"
+              className="input-field"
+            />
             <div className="flex flex-wrap gap-2 justify-end">
               <button onClick={() => setJoinPrompt({ open: false })} className="btn-secondary">取消</button>
-              <button onClick={() => {
-                const rid = joinPrompt.roomId;
-                const s = (window as any).__roomsSocket;
-                if (!rid) return;
-                if (s && s.connected) {
-                  const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
-                  // store join intent so room page auto-join can reuse the password and avoid double prompt
-                  try { sessionStorage.setItem(`room_join:${rid}`, JSON.stringify({ password: joinPassword, name: 'Guest' })); } catch (e) {}
-                  s.emit('join-room', { roomId: rid, name: 'Guest', token, password: joinPassword }, (resp: any) => {
-                    if (resp && resp.ok) {
-                      setJoinPrompt({ open: false });
-                      setJoinPassword('');
-                      router.push(`/${rid}`);
-                    } else {
-                      try { alert(resp?.message || '密码错误'); } catch(_) {}
-                      try { sessionStorage.removeItem(`room_join:${rid}`); } catch (e) {}
-                    }
-                  });
-                } else {
-                  try { alert('无法连接到实时服务器，无法加入房间，请稍后重试'); } catch (_) {}
-                }
-              }} className="btn-primary">提交并加入</button>
+              <button onClick={submitJoinPassword} className="btn-primary">提交并加入</button>
             </div>
           </div>
         </div>

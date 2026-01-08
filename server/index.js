@@ -76,6 +76,57 @@ function normalizeCoverUrl(input) {
   return trimmed;
 }
 
+function normalizeSongId(input) {
+  if (input === null || input === undefined) return null;
+  const value = String(input).trim();
+  if (!value) return null;
+  return /^\d+$/.test(value) ? value : null;
+}
+
+const coverCache = new Map();
+
+function extractNeteaseSongId(input) {
+  if (!input || typeof input !== 'string') return null;
+  try {
+    const url = new URL(input);
+    const id = url.searchParams.get('id');
+    if (id && /^\d+$/.test(id)) return id;
+  } catch (_) {}
+  const match = input.match(/(?:\?|&|#)id=(\d+)/i);
+  return match && match[1] ? match[1] : null;
+}
+
+async function fetchCoverById(id) {
+  const key = String(id || '');
+  if (!key) return null;
+  if (coverCache.has(key)) return coverCache.get(key);
+  try {
+    const res = await fetch(`https://api.paugram.com/netease/?id=${encodeURIComponent(key)}`);
+    if (res && res.ok) {
+      const data = await res.json();
+      const cover = normalizeCoverUrl(data && data.cover ? data.cover : null);
+      if (cover) {
+        coverCache.set(key, cover);
+        return cover;
+      }
+    }
+  } catch (_) {}
+  try {
+    const mod = await import('NeteaseCloudMusicApi');
+    const apiSongDetail = mod.song_detail || (mod.default && mod.default.song_detail);
+    if (!apiSongDetail) return null;
+    const res = await apiSongDetail({ ids: key });
+    const body = res && res.body ? res.body : res;
+    const songs = body && Array.isArray(body.songs) ? body.songs : [];
+    const song = songs.find((s) => String(s?.id || '') === key) || songs[0];
+    const cover = normalizeCoverUrl((song?.al && song.al.picUrl) || (song?.album && song.album.picUrl) || null);
+    if (cover) coverCache.set(key, cover);
+    return cover || null;
+  } catch (_) {
+    return null;
+  }
+}
+
 const rooms = {}; // { roomId: { members: { socketId: name }, state: { url, playing, currentTime }, locked: boolean } }
 const roomsSubscribers = new Set(); // socket ids that subscribed to rooms list
 
@@ -380,8 +431,12 @@ io.on('connection', (socket) => {
         if (typeof cb === 'function') cb({ ok: false, message: 'missing url' });
         return;
       }
-      const cover = normalizeCoverUrl(track.cover);
-      const item = { id: makeItemId(), url: track.url, title: track.title || '', cover, addedBy: socket.data.name || 'Anonymous', ts: Date.now() };
+      const sourceId = normalizeSongId(track.sourceId || track.songId || track.neteaseId || track.id) || extractNeteaseSongId(track.url);
+      let cover = normalizeCoverUrl(track.cover);
+      if (!cover && sourceId) {
+        cover = await fetchCoverById(sourceId);
+      }
+      const item = { id: makeItemId(), url: track.url, title: track.title || '', cover, sourceId: sourceId || null, addedBy: socket.data.name || 'Anonymous', ts: Date.now() };
       const room = rooms[currentRoom];
       room.playlist = room.playlist || [];
       room.playlist.push(item);
@@ -422,11 +477,13 @@ io.on('connection', (socket) => {
       room.playlist = room.playlist || [];
       for (const track of tracks) {
         if (!track || !track.url) continue;
+        const sourceId = normalizeSongId(track.sourceId || track.songId || track.neteaseId || track.id) || extractNeteaseSongId(track.url);
         const item = {
           id: makeItemId(),
           url: track.url,
           title: track.title || '',
           cover: normalizeCoverUrl(track.cover),
+          sourceId: sourceId || null,
           addedBy: socket.data.name || 'Anonymous',
           ts: Date.now(),
         };
@@ -492,6 +549,51 @@ io.on('connection', (socket) => {
       try { await prisma.room.upsert({ where: { id: currentRoom }, update: { playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0, playMode: rooms[currentRoom].state.playMode || 'sequence', visibility: rooms[currentRoom].visibility, passwordHash: rooms[currentRoom].passwordHash, locked: rooms[currentRoom].locked }, create: { id: currentRoom, playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0, playMode: rooms[currentRoom].state.playMode || 'sequence', visibility: rooms[currentRoom].visibility, passwordHash: rooms[currentRoom].passwordHash, locked: rooms[currentRoom].locked } }); } catch (_) {}
       io.to(currentRoom).emit('playlist-updated', rooms[currentRoom].playlist);
       if (typeof cb === 'function') cb({ ok: true, removed });
+    } catch (e) {
+      if (typeof cb === 'function') cb({ ok: false, message: 'error' });
+    }
+  });
+
+  socket.on('playlist-update-cover', async ({ id, cover } = {}, cb) => {
+    if (!currentRoom) return;
+    try {
+      const normalized = normalizeCoverUrl(cover);
+      if (!id || !normalized) {
+        if (typeof cb === 'function') cb({ ok: false, message: 'invalid payload' });
+        return;
+      }
+      const room = rooms[currentRoom];
+      room.playlist = room.playlist || [];
+      const idx = room.playlist.findIndex((x) => x.id === id);
+      if (idx === -1) {
+        if (typeof cb === 'function') cb({ ok: false, message: 'not found' });
+        return;
+      }
+      room.playlist[idx].cover = normalized;
+      try {
+        await prisma.room.upsert({
+          where: { id: currentRoom },
+          update: {
+            playlist: JSON.stringify(room.playlist || []),
+            currentIndex: room.state.currentIndex || 0,
+            playMode: room.state.playMode || 'sequence',
+            visibility: room.visibility,
+            passwordHash: room.passwordHash,
+            locked: room.locked,
+          },
+          create: {
+            id: currentRoom,
+            playlist: JSON.stringify(room.playlist || []),
+            currentIndex: room.state.currentIndex || 0,
+            playMode: room.state.playMode || 'sequence',
+            visibility: room.visibility,
+            passwordHash: room.passwordHash,
+            locked: room.locked,
+          },
+        });
+      } catch (_) {}
+      io.to(currentRoom).emit('playlist-updated', room.playlist);
+      if (typeof cb === 'function') cb({ ok: true });
     } catch (e) {
       if (typeof cb === 'function') cb({ ok: false, message: 'error' });
     }
@@ -1014,6 +1116,26 @@ const apiServer = createServer(async (req, res) => {
       }
     } catch (e) {
       res.writeHead(500); return res.end('error');
+    }
+  }
+
+  // API: song cover (proxy to NeteaseCloudMusicApi)
+  if (req.method === 'GET' && req.url && req.url.startsWith('/api/song/cover')) {
+    try {
+      const url = new URL(req.url, `http://localhost:${API_PORT}`);
+      const idParam = url.searchParams.get('id');
+      if (!idParam || !/^\d+$/.test(idParam)) {
+        res.writeHead(400); return res.end('missing id');
+      }
+      const cover = await fetchCoverById(idParam);
+      if (!cover) {
+        res.writeHead(404); return res.end('cover not found');
+      }
+      const body = JSON.stringify({ ok: true, cover });
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true' });
+      return res.end(body);
+    } catch (e) {
+      res.writeHead(500); return res.end('cover error');
     }
   }
 

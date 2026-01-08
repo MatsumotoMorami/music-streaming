@@ -78,8 +78,57 @@ export default function RoomPage() {
     return trimmed;
   }
 
+  function extractSongId(input?: string | null) {
+    if (!input || typeof input !== 'string') return null;
+    try {
+      const url = new URL(input);
+      const id = url.searchParams.get('id');
+      if (id && /^\d+$/.test(id)) return id;
+    } catch (_) {}
+    const match = input.match(/(?:\?|&|#)id=(\d+)/i);
+    return match && match[1] ? match[1] : null;
+  }
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const coverFetchRef = useRef<string | null>(null);
   const currentCover = normalizeCoverUrl(currentTrack?.cover);
+
+  useEffect(() => {
+    const trackId = currentTrack?.id;
+    const trackUrl = currentTrack?.url;
+    const trackSourceId = currentTrack?.sourceId;
+    if (!trackId || !trackUrl || currentCover) return;
+    const id = trackSourceId ? String(trackSourceId) : extractSongId(trackUrl);
+    if (!id) return;
+    if (coverFetchRef.current === id) return;
+    coverFetchRef.current = id;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/song/cover?id=${encodeURIComponent(id)}`);
+        if (!res.ok) {
+          coverFetchRef.current = null;
+          return;
+        }
+        const data = await res.json();
+        const cover = normalizeCoverUrl(data?.cover || null);
+        if (!cover || cancelled) {
+          if (!cancelled) coverFetchRef.current = null;
+          return;
+        }
+        if (socket && joined) {
+          socket.emit('playlist-update-cover', { id: trackId, cover });
+        } else {
+          setPlaylist((prev) => prev.map((item) => (item.id === trackId ? { ...item, cover } : item)));
+        }
+      } catch (_) {
+        coverFetchRef.current = null;
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentTrack?.id, currentTrack?.url, currentCover, socket, joined]);
 
   useEffect(() => {
     let mounted = true;
@@ -364,7 +413,8 @@ export default function RoomPage() {
     const url = newTrackUrl.trim();
     const title = newTrackTitle.trim();
     if (!url) return;
-    socket.emit('playlist-add', { url, title }, (resp: any) => {
+    const sourceId = extractSongId(url);
+    socket.emit('playlist-add', { url, title, sourceId }, (resp: any) => {
       if (resp && resp.ok) {
         setNewTrackUrl(''); setNewTrackTitle('');
       } else {
@@ -441,7 +491,7 @@ export default function RoomPage() {
           const url = song?.url || (songId ? `https://music.163.com/song/media/outer/url?id=${songId}.mp3` : '');
           const cover = normalizeCoverUrl(song?.al?.picUrl || song?.album?.picUrl || song?.picUrl || null);
           if (!url) return null;
-          return { url, title, cover };
+          return { url, title, cover, sourceId: songId || extractSongId(url) };
         }).filter(Boolean);
         if (batch.length) {
           socket.emit('playlist-add-batch', batch, (resp: any) => {
@@ -715,7 +765,13 @@ export default function RoomPage() {
                 {createVisibility === 'private' && (
                   <div>
                     <label className="text-xs uppercase tracking-[0.2em] text-slate-400">房间密码</label>
-                    <input type="password" placeholder="设置房间密码" value={createPassword} onChange={(e) => setCreatePassword(e.target.value)} className="input-field mt-2" />
+                    <input
+                      type="password"
+                      placeholder="设置房间密码"
+                      value={createPassword}
+                      onChange={(e) => setCreatePassword(e.target.value)}
+                      className="input-field mt-2"
+                    />
                   </div>
                 )}
                 <div className="flex flex-wrap gap-2">
@@ -729,7 +785,19 @@ export default function RoomPage() {
               <div className="space-y-2">
                 <label className="text-sm text-slate-300">此房间为私密房间，请输入密码</label>
                 <div className="flex flex-wrap gap-2">
-                  <input type="password" placeholder="房间密码" value={roomPassword} onChange={(e) => setRoomPassword(e.target.value)} className="input-field flex-1" />
+                  <input
+                    type="password"
+                    placeholder="房间密码"
+                    value={roomPassword}
+                    onChange={(e) => setRoomPassword(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                        e.preventDefault();
+                        if (!joining) joinRoom();
+                      }
+                    }}
+                    className="input-field flex-1"
+                  />
                   <button onClick={joinRoom} className="btn-primary" disabled={joining}>提交密码并加入</button>
                 </div>
               </div>
@@ -860,6 +928,12 @@ export default function RoomPage() {
                   placeholder="筛选歌单"
                   value={playlistFilter}
                   onChange={(e) => setPlaylistFilter(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      setPlaylistFilter(e.currentTarget.value);
+                    }
+                  }}
                   className="select-field"
                 />
               </div>
@@ -930,7 +1004,18 @@ export default function RoomPage() {
             <div className="space-y-3">
               <div className="space-y-2">
                 <div className="flex flex-wrap gap-2">
-                  <input placeholder="搜索网易云曲目（关键词）" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="input-field flex-1" />
+                  <input
+                    placeholder="搜索网易云曲目（关键词）"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                        e.preventDefault();
+                        if (!searching) doSearch();
+                      }
+                    }}
+                    className="input-field flex-1"
+                  />
                   <button onClick={doSearch} disabled={searching} className="btn-secondary">搜索</button>
                 </div>
                 <div className="space-y-2">
@@ -951,6 +1036,7 @@ export default function RoomPage() {
                                   url: r.src,
                                   title: `${r.name} — ${r.artists}`,
                                   cover: normalizeCoverUrl(r.cover),
+                                  sourceId: r.id || extractSongId(r.src),
                                 });
                               }
                             }}
@@ -967,7 +1053,18 @@ export default function RoomPage() {
               <div className="space-y-2">
                 <div className="text-sm font-medium text-slate-100">导入网易云歌单</div>
                 <div className="flex flex-wrap gap-2">
-                  <input placeholder="歌单 ID 或含分享链接的文本" value={importPlaylistId} onChange={(e) => setImportPlaylistId(e.target.value)} className="input-field flex-1" />
+                  <input
+                    placeholder="歌单 ID 或含分享链接的文本"
+                    value={importPlaylistId}
+                    onChange={(e) => setImportPlaylistId(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                        e.preventDefault();
+                        if (!importing) importPlaylist();
+                      }
+                    }}
+                    className="input-field flex-1"
+                  />
                   <button onClick={importPlaylist} disabled={!joined || importing} className="btn-secondary">
                     {importing ? '导入中...' : '导入'}
                   </button>
