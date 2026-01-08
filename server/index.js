@@ -76,6 +76,15 @@ function normalizeCoverUrl(input) {
   return trimmed;
 }
 
+function normalizeStreamUrl(input) {
+  if (!input || typeof input !== 'string') return null;
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('//')) return `https:${trimmed}`;
+  if (trimmed.startsWith('http://')) return `https://${trimmed.slice(7)}`;
+  return trimmed;
+}
+
 function normalizeSongId(input) {
   if (input === null || input === undefined) return null;
   const value = String(input).trim();
@@ -84,6 +93,13 @@ function normalizeSongId(input) {
 }
 
 const coverCache = new Map();
+const songUrlCache = new Map();
+let neteaseCookie = null;
+let neteaseLoginAt = 0;
+let neteaseLoginPromise = null;
+const NETEASE_LOGIN_TTL = 6 * 60 * 60 * 1000;
+const SONG_URL_TTL = 30 * 60 * 1000;
+const SONG_URL_CACHE_TTL = 10 * 60 * 1000;
 
 function extractNeteaseSongId(input) {
   if (!input || typeof input !== 'string') return null;
@@ -125,6 +141,93 @@ async function fetchCoverById(id) {
   } catch (_) {
     return null;
   }
+}
+
+async function ensureNeteaseLogin() {
+  const phone = process.env.NETEASE_PHONE || '';
+  const password = process.env.NETEASE_PASSWORD || '';
+  const md5Password = process.env.NETEASE_MD5_PASSWORD || '';
+  const countrycode = process.env.NETEASE_COUNTRYCODE || '';
+  if (!phone || (!password && !md5Password)) return null;
+  const now = Date.now();
+  if (neteaseCookie && (now - neteaseLoginAt) < NETEASE_LOGIN_TTL) return neteaseCookie;
+  if (neteaseLoginPromise) return neteaseLoginPromise;
+  neteaseLoginPromise = (async () => {
+    try {
+      const mod = await import('NeteaseCloudMusicApi');
+      const loginCellphone = mod.login_cellphone || (mod.default && mod.default.login_cellphone);
+      if (!loginCellphone) return null;
+      const payload = {
+        phone,
+        ...(countrycode ? { countrycode } : {}),
+        ...(md5Password ? { md5_password: md5Password } : { password }),
+      };
+      const res = await loginCellphone(payload);
+      const cookies = Array.isArray(res?.cookie) ? res.cookie.join('; ') : res?.cookie;
+      if (!cookies) return neteaseCookie;
+      neteaseCookie = cookies;
+      neteaseLoginAt = Date.now();
+      return neteaseCookie;
+    } catch (_) {
+      return neteaseCookie;
+    } finally {
+      neteaseLoginPromise = null;
+    }
+  })();
+  return neteaseLoginPromise;
+}
+
+async function fetchSongUrlById(id) {
+  const key = String(id || '');
+  if (!key) return null;
+  const cached = songUrlCache.get(key);
+  if (cached && (Date.now() - cached.ts) < SONG_URL_CACHE_TTL) return cached.url;
+  if (cached) songUrlCache.delete(key);
+  try {
+    const cookie = await ensureNeteaseLogin();
+    const mod = await import('NeteaseCloudMusicApi');
+    const apiSongUrlV1 = mod.song_url_v1 || (mod.default && mod.default.song_url_v1);
+    const apiSongUrl = mod.song_url || (mod.default && mod.default.song_url);
+    let url = null;
+    if (apiSongUrlV1) {
+      const res = await apiSongUrlV1({ id: key, level: 'exhigh', ...(cookie ? { cookie } : {}) });
+      const body = res && res.body ? res.body : res;
+      const data = body && Array.isArray(body.data) ? body.data : [];
+      url = data[0] && data[0].url ? data[0].url : null;
+    }
+    if (!url && apiSongUrl) {
+      const res = await apiSongUrl({ id: key, br: 320000, ...(cookie ? { cookie } : {}) });
+      const body = res && res.body ? res.body : res;
+      const data = body && Array.isArray(body.data) ? body.data : [];
+      url = data[0] && data[0].url ? data[0].url : null;
+    }
+    const normalized = normalizeStreamUrl(url);
+    if (normalized) songUrlCache.set(key, { url: normalized, ts: Date.now() });
+    return normalized || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function isOuterSongUrl(url) {
+  return typeof url === 'string' && url.includes('music.163.com/song/media/outer/url');
+}
+
+async function ensurePlayableUrl(room, idx) {
+  if (!room || !room.playlist || !room.playlist[idx]) return null;
+  const item = room.playlist[idx];
+  const sourceId = normalizeSongId(item.sourceId) || extractNeteaseSongId(item.url);
+  if (!sourceId) return item.url || null;
+  const urlAge = item.urlUpdatedAt ? (Date.now() - item.urlUpdatedAt) : Number.POSITIVE_INFINITY;
+  if (item.url && !isOuterSongUrl(item.url) && urlAge < SONG_URL_TTL) return item.url;
+  const resolved = await fetchSongUrlById(sourceId);
+  if (resolved) {
+    item.url = resolved;
+    item.sourceId = sourceId;
+    item.urlUpdatedAt = Date.now();
+    return resolved;
+  }
+  return item.url || null;
 }
 
 const rooms = {}; // { roomId: { members: { socketId: name }, state: { url, playing, currentTime }, locked: boolean } }
@@ -436,7 +539,16 @@ io.on('connection', (socket) => {
       if (!cover && sourceId) {
         cover = await fetchCoverById(sourceId);
       }
-      const item = { id: makeItemId(), url: track.url, title: track.title || '', cover, sourceId: sourceId || null, addedBy: socket.data.name || 'Anonymous', ts: Date.now() };
+      let url = track.url;
+      let urlUpdatedAt = null;
+      if (sourceId && (!url || isOuterSongUrl(url))) {
+        const resolvedUrl = await fetchSongUrlById(sourceId);
+        if (resolvedUrl) {
+          url = resolvedUrl;
+          urlUpdatedAt = Date.now();
+        }
+      }
+      const item = { id: makeItemId(), url, title: track.title || '', cover, sourceId: sourceId || null, urlUpdatedAt, addedBy: socket.data.name || 'Anonymous', ts: Date.now() };
       const room = rooms[currentRoom];
       room.playlist = room.playlist || [];
       room.playlist.push(item);
@@ -445,7 +557,8 @@ io.on('connection', (socket) => {
         const idx = typeof room.state.currentIndex === 'number' ? room.state.currentIndex : 0;
         const safeIdx = idx >= 0 && idx < room.playlist.length ? idx : 0;
         room.state.currentIndex = safeIdx;
-        room.state.url = room.playlist[safeIdx].url || null;
+        const resolvedUrl = await ensurePlayableUrl(room, safeIdx);
+        room.state.url = resolvedUrl || room.playlist[safeIdx].url || null;
         room.state.currentTime = 0;
         room.state.playing = false;
         room.state.updatedAt = Date.now();
@@ -621,7 +734,7 @@ io.on('connection', (socket) => {
   });
 
   // server-driven track navigation
-  socket.on('playlist-next', (cb) => {
+  socket.on('playlist-next', async (cb) => {
     if (!currentRoom) return;
     try {
       const pl = rooms[currentRoom].playlist || [];
@@ -632,7 +745,8 @@ io.on('connection', (socket) => {
       if (mode === 'single') next = idx; else if (mode === 'sequence') next = Math.min(idx + 1, pl.length - 1); else if (mode === 'loop') next = (idx + 1) % pl.length; else if (mode === 'shuffle') next = Math.floor(Math.random() * pl.length);
       const prevIdx = typeof rooms[currentRoom].state.currentIndex === 'number' ? rooms[currentRoom].state.currentIndex : -1;
       rooms[currentRoom].state.currentIndex = next;
-      rooms[currentRoom].state.url = pl[next].url;
+      const resolvedUrl = await ensurePlayableUrl(rooms[currentRoom], next);
+      rooms[currentRoom].state.url = resolvedUrl || pl[next].url;
       // reset playback position when switching tracks
       rooms[currentRoom].state.currentTime = 0;
       // if we actually moved to a different track (or mode intends replay), mark as playing so clients auto-play
@@ -649,7 +763,7 @@ io.on('connection', (socket) => {
     } catch (e) { if (typeof cb === 'function') cb({ ok: false }); }
   });
 
-  socket.on('playlist-prev', (cb) => {
+  socket.on('playlist-prev', async (cb) => {
     if (!currentRoom) return;
     try {
       const pl = rooms[currentRoom].playlist || [];
@@ -658,7 +772,8 @@ io.on('connection', (socket) => {
       let prev = idx > 0 ? idx - 1 : 0;
       const prevIdx2 = typeof rooms[currentRoom].state.currentIndex === 'number' ? rooms[currentRoom].state.currentIndex : -1;
       rooms[currentRoom].state.currentIndex = prev;
-      rooms[currentRoom].state.url = pl[prev].url;
+      const resolvedUrl = await ensurePlayableUrl(rooms[currentRoom], prev);
+      rooms[currentRoom].state.url = resolvedUrl || pl[prev].url;
       // reset playback position when switching tracks
       rooms[currentRoom].state.currentTime = 0;
       rooms[currentRoom].state.playing = (prev !== prevIdx2);
@@ -672,14 +787,15 @@ io.on('connection', (socket) => {
     } catch (e) { if (typeof cb === 'function') cb({ ok: false }); }
   });
 
-  socket.on('set-current-index', (idx, cb) => {
+  socket.on('set-current-index', async (idx, cb) => {
     if (!currentRoom) return;
     try {
       const pl = rooms[currentRoom].playlist || [];
       if (!pl.length || typeof idx !== 'number' || idx < 0 || idx >= pl.length) { if (typeof cb === 'function') cb({ ok: false, message: 'invalid index' }); return; }
       const prevIdx3 = typeof rooms[currentRoom].state.currentIndex === 'number' ? rooms[currentRoom].state.currentIndex : -1;
       rooms[currentRoom].state.currentIndex = idx;
-      rooms[currentRoom].state.url = pl[idx].url;
+      const resolvedUrl = await ensurePlayableUrl(rooms[currentRoom], idx);
+      rooms[currentRoom].state.url = resolvedUrl || pl[idx].url;
       // reset playback position when switching tracks
       rooms[currentRoom].state.currentTime = 0;
       rooms[currentRoom].state.playing = (idx !== prevIdx3) || (rooms[currentRoom].state.playMode === 'single');

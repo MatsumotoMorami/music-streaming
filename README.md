@@ -13,3 +13,8 @@ npx prisma migrate dev --name init
 ```
 
 注意：现有的 `server/users.json` 不会被自动迁移，按需手动迁移用户数据。
+
+网易云登录（可选，用于会员歌曲播放）
+- `NETEASE_PHONE`：手机号
+- `NETEASE_PASSWORD`：密码（或使用 `NETEASE_MD5_PASSWORD`）
+- `NETEASE_COUNTRYCODE`：国家码（国外手机号时使用）
