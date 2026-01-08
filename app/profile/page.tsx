@@ -103,7 +103,15 @@ export default function ProfilePage() {
     } finally { setSaving(false); }
   }
 
-  if (loading) return <div className="page-container">加载中…</div>;
+  if (loading) {
+    return (
+      <div className="page-container">
+        <div className="loader-wrap">
+          <div className="loader" aria-label="加载中" />
+        </div>
+      </div>
+    );
+  }
   if (!profile) return <div className="page-container">未登录</div>;
 
   return (
