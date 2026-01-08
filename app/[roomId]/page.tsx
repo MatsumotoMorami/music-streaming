@@ -1084,9 +1084,9 @@ export default function RoomPage() {
                     <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
                       {searchResults.map((r, i) => (
                         <div key={r.id || i} className="list-row">
-                          <div>
-                            <div className="font-medium">{r.name} — {r.artists}</div>
-                            <div className="muted text-sm">{r.album}</div>
+                          <div className="min-w-0">
+                            <div className="font-medium truncate">{r.name} — {r.artists}</div>
+                            <div className="muted text-sm truncate">{r.album}</div>
                           </div>
                           <button
                             disabled={!joined}
