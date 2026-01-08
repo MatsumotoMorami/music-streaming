@@ -865,7 +865,7 @@ export default function RoomPage() {
           </div>
         ) : (
           <div className="space-y-5">
-            <div className="flex flex-col gap-2 lg:flex-row lg:items-stretch lg:justify-evenly lg:gap-2">
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-stretch lg:justify-evenly lg:gap-6">
               <div className="flex shrink-0 items-center lg:justify-center">
                 {currentCover ? (
                   <img
