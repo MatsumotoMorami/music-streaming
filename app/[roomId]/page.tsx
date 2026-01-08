@@ -47,6 +47,8 @@ export default function RoomPage() {
   const [visibilityPassword, setVisibilityPassword] = useState('');
   const [isPlaying, setIsPlaying] = useState(false);
   const [profileNickname, setProfileNickname] = useState<string | null>(null);
+  const [profileEmail, setProfileEmail] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<Array<{ id: string; message: string; tone?: 'success' | 'error' }>>([]);
   const nicknameRef = useRef<string | null>(null);
 
   const currentTrack =
@@ -62,6 +64,31 @@ export default function RoomPage() {
         return title.includes(query) || url.includes(query);
       })
     : playlist;
+
+  function pushToast(message: string, tone: 'success' | 'error' = 'success') {
+    const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    setToasts((prev) => [...prev, { id, message, tone }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((toast) => toast.id !== id));
+    }, 2600);
+  }
+
+  function getPlaylistIndex(item: any) {
+    if (!item) return -1;
+    if (item.id) {
+      const idx = playlist.findIndex((p) => p?.id === item.id);
+      if (idx >= 0) return idx;
+    }
+    return playlist.indexOf(item);
+  }
+
+  function getEmailFallback(email?: string | null) {
+    if (!email || typeof email !== 'string') return null;
+    const trimmed = email.trim();
+    if (!trimmed || !trimmed.includes('@')) return null;
+    const prefix = trimmed.split('@')[0];
+    return prefix || null;
+  }
 
   function formatTime(sec: number) {
     if (!Number.isFinite(sec)) return '00:00';
@@ -91,7 +118,7 @@ export default function RoomPage() {
     return match && match[1] ? match[1] : null;
   }
 
-  async function fetchProfileNickname(token: string | null) {
+  async function fetchProfileInfo(token: string | null) {
     if (!token) return null;
     try {
       const res = await fetch('/api/profile', {
@@ -101,7 +128,10 @@ export default function RoomPage() {
       if (!res.ok) return null;
       const data = await res.json();
       const nickname = data?.profile?.nickname;
-      if (nickname && String(nickname).trim()) return String(nickname).trim();
+      const email = data?.profile?.email;
+      const cleanedNick = nickname && String(nickname).trim() ? String(nickname).trim() : null;
+      const cleanedEmail = typeof email === 'string' && email.trim() ? email.trim() : null;
+      return { nickname: cleanedNick, email: cleanedEmail };
     } catch (_) {}
     return null;
   }
@@ -259,13 +289,16 @@ export default function RoomPage() {
           const storedJoin = typeof window !== 'undefined' ? sessionStorage.getItem(joinKey) : null;
           const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
           if (storedCreate) setAutoCreateIntent(true);
-          let autoName = nicknameRef.current || profileNickname || ('Guest-' + Math.random().toString(36).slice(2, 6));
+          let autoName = nicknameRef.current || profileNickname || getEmailFallback(profileEmail) || ('Guest-' + Math.random().toString(36).slice(2, 6));
           if (!nicknameRef.current && token) {
-            const nick = await fetchProfileNickname(token);
-            if (nick) {
-              nicknameRef.current = nick;
-              setProfileNickname(nick);
-              autoName = nick;
+            const info = await fetchProfileInfo(token);
+            if (info?.email) setProfileEmail(info.email);
+            if (info?.nickname) {
+              nicknameRef.current = info.nickname;
+              setProfileNickname(info.nickname);
+              autoName = info.nickname;
+            } else if (info?.email) {
+              autoName = getEmailFallback(info.email) || autoName;
             }
           }
 
@@ -335,22 +368,25 @@ export default function RoomPage() {
   // Joining (and creating a private room) must be explicit so the user can choose visibility/password.
   useEffect(() => {
     if (socket && !joined) {
-      const autoName = profileNickname || ("Guest-" + Math.random().toString(36).slice(2, 6));
+      const autoName = profileNickname || getEmailFallback(profileEmail) || ("Guest-" + Math.random().toString(36).slice(2, 6));
       setName(autoName);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket, profileNickname, joined]);
+  }, [socket, profileNickname, profileEmail, joined]);
 
   useEffect(() => {
     let active = true;
     const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
     if (!token) return;
     (async () => {
-      const nick = await fetchProfileNickname(token);
-      if (!active || !nick) return;
-      nicknameRef.current = nick;
-      setProfileNickname(nick);
-      if (!joined) setName(nick);
+      const info = await fetchProfileInfo(token);
+      if (!active || !info) return;
+      if (info.email) setProfileEmail(info.email);
+      if (info.nickname) {
+        nicknameRef.current = info.nickname;
+        setProfileNickname(info.nickname);
+        if (!joined) setName(info.nickname);
+      }
     })();
     return () => { active = false; };
   }, [joined]);
@@ -365,7 +401,7 @@ export default function RoomPage() {
     setJoinError(null);
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
-      const displayName = name || profileNickname || ("Guest-" + Math.random().toString(36).slice(2, 6));
+      const displayName = name || profileNickname || getEmailFallback(profileEmail) || ("Guest-" + Math.random().toString(36).slice(2, 6));
       socket.emit("join-room", { roomId, name: displayName, token, password: roomPassword || undefined }, (resp: any) => {
         setJoining(false);
         if (resp && resp.ok) {
@@ -400,7 +436,7 @@ export default function RoomPage() {
     setJoinError(null);
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
-      const displayName = name || profileNickname || ("Guest-" + Math.random().toString(36).slice(2, 6));
+      const displayName = name || profileNickname || getEmailFallback(profileEmail) || ("Guest-" + Math.random().toString(36).slice(2, 6));
       socket.emit('join-room', { roomId, name: displayName, token, visibility: createVisibility, password: createVisibility === 'private' ? createPassword : undefined }, (resp: any) => {
         setJoining(false);
         if (resp && resp.ok) {
@@ -435,8 +471,9 @@ export default function RoomPage() {
     socket.emit('playlist-add', { url, title, sourceId }, (resp: any) => {
       if (resp && resp.ok) {
         setNewTrackUrl(''); setNewTrackTitle('');
+        pushToast('已添加到歌单', 'success');
       } else {
-        try { alert(resp?.message || '添加失败'); } catch (_) {}
+        pushToast(resp?.message || '添加失败', 'error');
       }
     });
   }
@@ -552,7 +589,9 @@ export default function RoomPage() {
 
   function playFromPlaylist(item: any, idx: number) {
     if (!socket || !joined) return;
-    socket.emit('set-current-index', idx, (resp: any) => {
+    const targetIndex = Number.isFinite(idx) && idx >= 0 ? idx : getPlaylistIndex(item);
+    if (targetIndex < 0) return;
+    socket.emit('set-current-index', targetIndex, (resp: any) => {
       if (!resp || !resp.ok) try { alert(resp?.message || '无法播放'); } catch(_) {}
     });
   }
@@ -959,40 +998,43 @@ export default function RoomPage() {
               <div className="space-y-2">
                 {playlist.length === 0 && <div className="muted text-sm">歌单为空</div>}
                 {playlist.length > 0 && filteredPlaylist.length === 0 && <div className="muted text-sm">未找到匹配歌曲</div>}
-                {filteredPlaylist.map((it, idx) => (
-                  <div key={it.id || idx} className={`list-row ${currentIndex === idx ? 'ring-1 ring-emerald-400/40' : ''}`}>
-                    <div className="min-w-0">
-                      <div className="font-medium truncate max-w-[320px]">{it.title || it.url}</div>
-                      <div className="muted text-sm">{it.addedBy} • {new Date(it.ts || Date.now()).toLocaleString()}</div>
+                {filteredPlaylist.map((it, idx) => {
+                  const realIndex = getPlaylistIndex(it);
+                  return (
+                    <div key={it.id || idx} className={`list-row ${currentIndex === realIndex ? 'ring-1 ring-emerald-400/40' : ''}`}>
+                      <div className="min-w-0">
+                        <div className="font-medium truncate max-w-[320px]">{it.title || it.url}</div>
+                        <div className="muted text-sm">{it.addedBy} • {new Date(it.ts || Date.now()).toLocaleString()}</div>
+                      </div>
+                      <div className="ml-auto flex flex-col items-end gap-2 sm:flex-row sm:items-center sm:justify-end">
+                        <button
+                          onClick={() => playFromPlaylist(it, realIndex)}
+                          className="brand-mark"
+                          aria-label="播放"
+                          title="播放"
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4">
+                            <path d="M12 5v9" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                            <path d="M12 5c3 1.2 4.5 2.6 4.5 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                            <circle cx="10.2" cy="17.3" r="2.2" fill="none" stroke="currentColor" strokeWidth="1.6" />
+                          </svg>
+                        </button>
+                        <button
+                          onClick={() => removeTrack(it.id)}
+                          className="brand-mark"
+                          aria-label="删除"
+                          title="删除"
+                        >
+                          <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4">
+                            <path d="M4 7h16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                            <path d="M9 7l1-2h4l1 2" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                            <path d="M8 10v7M12 10v7M16 10v7" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                          </svg>
+                        </button>
+                      </div>
                     </div>
-                    <div className="ml-auto flex flex-col items-end gap-2 sm:flex-row sm:items-center sm:justify-end">
-                      <button
-                        onClick={() => playFromPlaylist(it, idx)}
-                        className="brand-mark"
-                        aria-label="播放"
-                        title="播放"
-                      >
-                        <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4">
-                          <path d="M12 5v9" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-                          <path d="M12 5c3 1.2 4.5 2.6 4.5 4.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-                          <circle cx="10.2" cy="17.3" r="2.2" fill="none" stroke="currentColor" strokeWidth="1.6" />
-                        </svg>
-                      </button>
-                      <button
-                        onClick={() => removeTrack(it.id)}
-                        className="brand-mark"
-                        aria-label="删除"
-                        title="删除"
-                      >
-                        <svg viewBox="0 0 24 24" aria-hidden="true" className="h-4 w-4">
-                          <path d="M4 7h16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-                          <path d="M9 7l1-2h4l1 2" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-                          <path d="M8 10v7M12 10v7M16 10v7" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
 
@@ -1055,6 +1097,12 @@ export default function RoomPage() {
                                   title: `${r.name} — ${r.artists}`,
                                   cover: normalizeCoverUrl(r.cover),
                                   sourceId: r.id || extractSongId(r.src),
+                                }, (resp: any) => {
+                                  if (resp && resp.ok) {
+                                    pushToast('已添加到歌单', 'success');
+                                  } else {
+                                    pushToast(resp?.message || '添加失败', 'error');
+                                  }
                                 });
                               }
                             }}
@@ -1117,6 +1165,17 @@ export default function RoomPage() {
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {toasts.length > 0 && (
+        <div className="toast-stack" aria-live="polite">
+          {toasts.map((toast) => (
+            <div key={toast.id} className={`toast-card ${toast.tone === 'error' ? 'toast-error' : 'toast-success'}`}>
+              <div className="toast-title">{toast.tone === 'error' ? '操作失败' : '已添加'}</div>
+              <div className="toast-message">{toast.message}</div>
+            </div>
+          ))}
         </div>
       )}
     </div>

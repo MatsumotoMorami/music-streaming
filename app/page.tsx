@@ -12,6 +12,7 @@ export default function Home() {
   const [joinPrompt, setJoinPrompt] = useState<{ open: boolean; roomId?: string }>({ open: false, roomId: undefined });
   const [joinPassword, setJoinPassword] = useState('');
   const [profileNickname, setProfileNickname] = useState<string | null>(null);
+  const [profileEmail, setProfileEmail] = useState<string | null>(null);
   const [guestName] = useState(() => `Guest-${Math.random().toString(36).slice(2, 6)}`);
   const router = useRouter();
 
@@ -58,19 +59,32 @@ export default function Home() {
         if (!res.ok) return;
         const data = await res.json();
         const nickname = data?.profile?.nickname;
+        const email = data?.profile?.email;
         if (active && nickname && String(nickname).trim()) {
           setProfileNickname(String(nickname).trim());
+        }
+        if (active && typeof email === 'string' && email.trim()) {
+          setProfileEmail(email.trim());
         }
       } catch (_) {}
     })();
     return () => { active = false; };
   }, []);
 
+  function getEmailFallback(email?: string | null) {
+    if (!email || typeof email !== 'string') return null;
+    const trimmed = email.trim();
+    if (!trimmed || !trimmed.includes('@')) return null;
+    const prefix = trimmed.split('@')[0];
+    return prefix || null;
+  }
+
   async function createRoom() {
     const id = Math.random().toString(36).slice(2, 9);
     // store creation intent so the room page can auto-join using these params
     try {
-      const payload = { visibility: createVisibility, password: createVisibility === 'private' ? createPassword : undefined, name: profileNickname || guestName };
+      const displayName = profileNickname || getEmailFallback(profileEmail) || guestName;
+      const payload = { visibility: createVisibility, password: createVisibility === 'private' ? createPassword : undefined, name: displayName };
       sessionStorage.setItem(`room_create:${id}`, JSON.stringify(payload));
     } catch (e) {}
     router.push(`/${id}`);
@@ -89,7 +103,7 @@ export default function Home() {
     // try to join directly (public)
     if (s && s.connected) {
       const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
-      const displayName = profileNickname || guestName;
+      const displayName = profileNickname || getEmailFallback(profileEmail) || guestName;
       s.emit('join-room', { roomId: rid, name: displayName, token }, (resp: any) => {
         if (resp && resp.ok) router.push(`/${rid}`);
         else {
@@ -108,7 +122,7 @@ export default function Home() {
     if (!rid) return;
     if (s && s.connected) {
       const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
-      const displayName = profileNickname || guestName;
+      const displayName = profileNickname || getEmailFallback(profileEmail) || guestName;
       // store join intent so room page auto-join can reuse the password and avoid double prompt
       try { sessionStorage.setItem(`room_join:${rid}`, JSON.stringify({ password: joinPassword, name: displayName })); } catch (e) {}
       s.emit('join-room', { roomId: rid, name: displayName, token, password: joinPassword }, (resp: any) => {
