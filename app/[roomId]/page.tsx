@@ -46,6 +46,8 @@ export default function RoomPage() {
   const [visibilityDraft, setVisibilityDraft] = useState<'public'|'private'>('public');
   const [visibilityPassword, setVisibilityPassword] = useState('');
   const [isPlaying, setIsPlaying] = useState(false);
+  const [profileNickname, setProfileNickname] = useState<string | null>(null);
+  const nicknameRef = useRef<string | null>(null);
 
   const currentTrack =
     (typeof currentIndex === 'number' && currentIndex >= 0 ? playlist[currentIndex] : null) ||
@@ -87,6 +89,21 @@ export default function RoomPage() {
     } catch (_) {}
     const match = input.match(/(?:\?|&|#)id=(\d+)/i);
     return match && match[1] ? match[1] : null;
+  }
+
+  async function fetchProfileNickname(token: string | null) {
+    if (!token) return null;
+    try {
+      const res = await fetch('/api/profile', {
+        credentials: 'include',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      const nickname = data?.profile?.nickname;
+      if (nickname && String(nickname).trim()) return String(nickname).trim();
+    } catch (_) {}
+    return null;
   }
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -232,7 +249,7 @@ export default function RoomPage() {
         try { alert(err?.message || '加入被拒绝'); } catch (_) {}
       });
 
-      const attemptAutoJoin = () => {
+      const attemptAutoJoin = async () => {
         if (!roomId || autoJoinRef.current) return;
         autoJoinRef.current = true;
         try {
@@ -242,17 +259,15 @@ export default function RoomPage() {
           const storedJoin = typeof window !== 'undefined' ? sessionStorage.getItem(joinKey) : null;
           const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
           if (storedCreate) setAutoCreateIntent(true);
-          // derive a display name from token if available
-          let autoName = 'Guest-' + Math.random().toString(36).slice(2, 6);
-          try {
-            if (token) {
-              const parts = token.split('.');
-              if (parts.length === 3) {
-                const payload = JSON.parse(decodeURIComponent(escape(window.atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))));
-                if (payload && payload.email) autoName = payload.email.split('@')[0];
-              }
+          let autoName = nicknameRef.current || profileNickname || ('Guest-' + Math.random().toString(36).slice(2, 6));
+          if (!nicknameRef.current && token) {
+            const nick = await fetchProfileNickname(token);
+            if (nick) {
+              nicknameRef.current = nick;
+              setProfileNickname(nick);
+              autoName = nick;
             }
-          } catch (_) {}
+          }
 
           const joinPayload: any = { roomId, name: autoName, token };
           // prefer join intent (from homepage join modal) over create intent
@@ -262,6 +277,7 @@ export default function RoomPage() {
               const payload = JSON.parse(prefer || '{}');
               if (payload.visibility) joinPayload.visibility = payload.visibility;
               if (payload.password) joinPayload.password = payload.password;
+              if (payload.name) joinPayload.name = payload.name;
             } catch (_) {}
           }
 
@@ -295,9 +311,9 @@ export default function RoomPage() {
 
       // Auto-join only after socket connected to avoid silent timeouts.
       if (s.connected) {
-        attemptAutoJoin();
+        void attemptAutoJoin();
       } else {
-        s.once("connect", attemptAutoJoin);
+        s.once("connect", () => { void attemptAutoJoin(); });
       }
     })();
 
@@ -319,25 +335,25 @@ export default function RoomPage() {
   // Joining (and creating a private room) must be explicit so the user can choose visibility/password.
   useEffect(() => {
     if (socket && !joined) {
-      let autoName = "Guest-" + Math.random().toString(36).slice(2, 6);
-      try {
-        const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
-        if (token) {
-          try {
-            const parts = token.split('.');
-            if (parts.length === 3) {
-              const payload = JSON.parse(decodeURIComponent(escape(window.atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))));
-              if (payload && payload.email) {
-                autoName = payload.email.split('@')[0];
-              }
-            }
-          } catch (_) {}
-        }
-      } catch (_) {}
+      const autoName = profileNickname || ("Guest-" + Math.random().toString(36).slice(2, 6));
       setName(autoName);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [socket]);
+  }, [socket, profileNickname, joined]);
+
+  useEffect(() => {
+    let active = true;
+    const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
+    if (!token) return;
+    (async () => {
+      const nick = await fetchProfileNickname(token);
+      if (!active || !nick) return;
+      nicknameRef.current = nick;
+      setProfileNickname(nick);
+      if (!joined) setName(nick);
+    })();
+    return () => { active = false; };
+  }, [joined]);
 
   function joinRoom() {
     if (!socket || !roomId) return;
@@ -349,7 +365,8 @@ export default function RoomPage() {
     setJoinError(null);
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
-      socket.emit("join-room", { roomId, name: name || "Anonymous", token, password: roomPassword || undefined }, (resp: any) => {
+      const displayName = name || profileNickname || ("Guest-" + Math.random().toString(36).slice(2, 6));
+      socket.emit("join-room", { roomId, name: displayName, token, password: roomPassword || undefined }, (resp: any) => {
         setJoining(false);
         if (resp && resp.ok) {
           setJoined(true);
@@ -383,7 +400,8 @@ export default function RoomPage() {
     setJoinError(null);
     try {
       const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
-      socket.emit('join-room', { roomId, name: name || 'Anonymous', token, visibility: createVisibility, password: createVisibility === 'private' ? createPassword : undefined }, (resp: any) => {
+      const displayName = name || profileNickname || ("Guest-" + Math.random().toString(36).slice(2, 6));
+      socket.emit('join-room', { roomId, name: displayName, token, visibility: createVisibility, password: createVisibility === 'private' ? createPassword : undefined }, (resp: any) => {
         setJoining(false);
         if (resp && resp.ok) {
           setJoined(true);

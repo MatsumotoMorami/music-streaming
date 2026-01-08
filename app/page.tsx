@@ -11,6 +11,8 @@ export default function Home() {
   const [createPassword, setCreatePassword] = useState('');
   const [joinPrompt, setJoinPrompt] = useState<{ open: boolean; roomId?: string }>({ open: false, roomId: undefined });
   const [joinPassword, setJoinPassword] = useState('');
+  const [profileNickname, setProfileNickname] = useState<string | null>(null);
+  const [guestName] = useState(() => `Guest-${Math.random().toString(36).slice(2, 6)}`);
   const router = useRouter();
 
   useEffect(() => {
@@ -43,11 +45,32 @@ export default function Home() {
     return () => { mounted = false; try { const s = (window as any).__roomsSocket; if (s) { try { s.emit('unsubscribe-rooms'); } catch(_){} s.disconnect(); } } catch(_){} };
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
+    if (!token) return;
+    (async () => {
+      try {
+        const res = await fetch('/api/profile', {
+          credentials: 'include',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        const nickname = data?.profile?.nickname;
+        if (active && nickname && String(nickname).trim()) {
+          setProfileNickname(String(nickname).trim());
+        }
+      } catch (_) {}
+    })();
+    return () => { active = false; };
+  }, []);
+
   async function createRoom() {
     const id = Math.random().toString(36).slice(2, 9);
     // store creation intent so the room page can auto-join using these params
     try {
-      const payload = { visibility: createVisibility, password: createVisibility === 'private' ? createPassword : undefined, name: 'Creator' };
+      const payload = { visibility: createVisibility, password: createVisibility === 'private' ? createPassword : undefined, name: profileNickname || guestName };
       sessionStorage.setItem(`room_create:${id}`, JSON.stringify(payload));
     } catch (e) {}
     router.push(`/${id}`);
@@ -66,7 +89,8 @@ export default function Home() {
     // try to join directly (public)
     if (s && s.connected) {
       const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
-      s.emit('join-room', { roomId: rid, name: 'Guest', token }, (resp: any) => {
+      const displayName = profileNickname || guestName;
+      s.emit('join-room', { roomId: rid, name: displayName, token }, (resp: any) => {
         if (resp && resp.ok) router.push(`/${rid}`);
         else {
           if (resp && resp.code === 'password-required') setJoinPrompt({ open: true, roomId: rid });
@@ -84,9 +108,10 @@ export default function Home() {
     if (!rid) return;
     if (s && s.connected) {
       const token = typeof window !== 'undefined' ? localStorage.getItem('authToken') : null;
+      const displayName = profileNickname || guestName;
       // store join intent so room page auto-join can reuse the password and avoid double prompt
-      try { sessionStorage.setItem(`room_join:${rid}`, JSON.stringify({ password: joinPassword, name: 'Guest' })); } catch (e) {}
-      s.emit('join-room', { roomId: rid, name: 'Guest', token, password: joinPassword }, (resp: any) => {
+      try { sessionStorage.setItem(`room_join:${rid}`, JSON.stringify({ password: joinPassword, name: displayName })); } catch (e) {}
+      s.emit('join-room', { roomId: rid, name: displayName, token, password: joinPassword }, (resp: any) => {
         if (resp && resp.ok) {
           setJoinPrompt({ open: false });
           setJoinPassword('');
