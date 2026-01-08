@@ -866,7 +866,7 @@ export default function RoomPage() {
         ) : (
           <div className="space-y-5">
             <div className="flex flex-col gap-2 lg:flex-row lg:items-stretch lg:justify-evenly lg:gap-2">
-              <div className="flex items-center lg:justify-center">
+              <div className="flex shrink-0 items-center lg:justify-center">
                 {currentCover ? (
                   <img
                     src={currentCover}
@@ -877,7 +877,7 @@ export default function RoomPage() {
                   <div className="h-40 w-40 rounded-2xl bg-slate-700/60" />
                 )}
               </div>
-              <div className="space-y-3 lg:flex lg:flex-col lg:justify-between">
+              <div className="min-w-0 flex-1 space-y-3 lg:flex lg:flex-col lg:justify-between">
                 <div>
                   <label className="text-xs uppercase tracking-[0.2em] text-slate-400">当前歌曲</label>
                   <div className="mt-2 scroll-title text-lg font-medium">{currentTitle}</div>
