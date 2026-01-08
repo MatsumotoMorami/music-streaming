@@ -67,6 +67,15 @@ function makeItemId() {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function normalizeCoverUrl(input) {
+  if (!input || typeof input !== 'string') return null;
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('//')) return `https:${trimmed}`;
+  if (trimmed.startsWith('http://')) return `https://${trimmed.slice(7)}`;
+  return trimmed;
+}
+
 const rooms = {}; // { roomId: { members: { socketId: name }, state: { url, playing, currentTime }, locked: boolean } }
 const roomsSubscribers = new Set(); // socket ids that subscribed to rooms list
 
@@ -371,12 +380,29 @@ io.on('connection', (socket) => {
         if (typeof cb === 'function') cb({ ok: false, message: 'missing url' });
         return;
       }
-      const item = { id: makeItemId(), url: track.url, title: track.title || '', cover: track.cover || null, addedBy: socket.data.name || 'Anonymous', ts: Date.now() };
-      rooms[currentRoom].playlist = rooms[currentRoom].playlist || [];
-      rooms[currentRoom].playlist.push(item);
+      const cover = normalizeCoverUrl(track.cover);
+      const item = { id: makeItemId(), url: track.url, title: track.title || '', cover, addedBy: socket.data.name || 'Anonymous', ts: Date.now() };
+      const room = rooms[currentRoom];
+      room.playlist = room.playlist || [];
+      room.playlist.push(item);
+      let initialized = false;
+      if (!room.state.url && room.playlist.length > 0) {
+        const idx = typeof room.state.currentIndex === 'number' ? room.state.currentIndex : 0;
+        const safeIdx = idx >= 0 && idx < room.playlist.length ? idx : 0;
+        room.state.currentIndex = safeIdx;
+        room.state.url = room.playlist[safeIdx].url || null;
+        room.state.currentTime = 0;
+        room.state.playing = false;
+        room.state.updatedAt = Date.now();
+        initialized = true;
+      }
       // persist to DB
-      try { await prisma.room.upsert({ where: { id: currentRoom }, update: { playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0, playMode: rooms[currentRoom].state.playMode || 'sequence', visibility: rooms[currentRoom].visibility, passwordHash: rooms[currentRoom].passwordHash, locked: rooms[currentRoom].locked }, create: { id: currentRoom, playlist: JSON.stringify(rooms[currentRoom].playlist || []), currentIndex: rooms[currentRoom].state.currentIndex || 0, playMode: rooms[currentRoom].state.playMode || 'sequence', visibility: rooms[currentRoom].visibility, passwordHash: rooms[currentRoom].passwordHash, locked: rooms[currentRoom].locked } }); } catch (_) {}
-      io.to(currentRoom).emit('playlist-updated', rooms[currentRoom].playlist);
+      try { await prisma.room.upsert({ where: { id: currentRoom }, update: { playlist: JSON.stringify(room.playlist || []), currentIndex: room.state.currentIndex || 0, playMode: room.state.playMode || 'sequence', visibility: room.visibility, passwordHash: room.passwordHash, locked: room.locked }, create: { id: currentRoom, playlist: JSON.stringify(room.playlist || []), currentIndex: room.state.currentIndex || 0, playMode: room.state.playMode || 'sequence', visibility: room.visibility, passwordHash: room.passwordHash, locked: room.locked } }); } catch (_) {}
+      io.to(currentRoom).emit('playlist-updated', room.playlist);
+      if (initialized && room.state.url) {
+        io.to(currentRoom).emit('room-state', roomStatePayload(room));
+        io.to(currentRoom).emit('set-track', { url: room.state.url });
+      }
       // respond ok
       if (typeof cb === 'function') cb({ ok: true, item });
     } catch (e) {
@@ -392,47 +418,63 @@ io.on('connection', (socket) => {
         return;
       }
       const added = [];
-      rooms[currentRoom].playlist = rooms[currentRoom].playlist || [];
+      const room = rooms[currentRoom];
+      room.playlist = room.playlist || [];
       for (const track of tracks) {
         if (!track || !track.url) continue;
         const item = {
           id: makeItemId(),
           url: track.url,
           title: track.title || '',
-          cover: track.cover || null,
+          cover: normalizeCoverUrl(track.cover),
           addedBy: socket.data.name || 'Anonymous',
           ts: Date.now(),
         };
-        rooms[currentRoom].playlist.push(item);
+        room.playlist.push(item);
         added.push(item);
       }
       if (!added.length) {
         if (typeof cb === 'function') cb({ ok: false, message: 'no valid tracks' });
         return;
       }
+      let initialized = false;
+      if (!room.state.url && room.playlist.length > 0) {
+        const idx = typeof room.state.currentIndex === 'number' ? room.state.currentIndex : 0;
+        const safeIdx = idx >= 0 && idx < room.playlist.length ? idx : 0;
+        room.state.currentIndex = safeIdx;
+        room.state.url = room.playlist[safeIdx].url || null;
+        room.state.currentTime = 0;
+        room.state.playing = false;
+        room.state.updatedAt = Date.now();
+        initialized = true;
+      }
       try {
         await prisma.room.upsert({
           where: { id: currentRoom },
           update: {
-            playlist: JSON.stringify(rooms[currentRoom].playlist || []),
-            currentIndex: rooms[currentRoom].state.currentIndex || 0,
-            playMode: rooms[currentRoom].state.playMode || 'sequence',
-            visibility: rooms[currentRoom].visibility,
-            passwordHash: rooms[currentRoom].passwordHash,
-            locked: rooms[currentRoom].locked,
+            playlist: JSON.stringify(room.playlist || []),
+            currentIndex: room.state.currentIndex || 0,
+            playMode: room.state.playMode || 'sequence',
+            visibility: room.visibility,
+            passwordHash: room.passwordHash,
+            locked: room.locked,
           },
           create: {
             id: currentRoom,
-            playlist: JSON.stringify(rooms[currentRoom].playlist || []),
-            currentIndex: rooms[currentRoom].state.currentIndex || 0,
-            playMode: rooms[currentRoom].state.playMode || 'sequence',
-            visibility: rooms[currentRoom].visibility,
-            passwordHash: rooms[currentRoom].passwordHash,
-            locked: rooms[currentRoom].locked,
+            playlist: JSON.stringify(room.playlist || []),
+            currentIndex: room.state.currentIndex || 0,
+            playMode: room.state.playMode || 'sequence',
+            visibility: room.visibility,
+            passwordHash: room.passwordHash,
+            locked: room.locked,
           },
         });
       } catch (_) {}
-      io.to(currentRoom).emit('playlist-updated', rooms[currentRoom].playlist);
+      io.to(currentRoom).emit('playlist-updated', room.playlist);
+      if (initialized && room.state.url) {
+        io.to(currentRoom).emit('room-state', roomStatePayload(room));
+        io.to(currentRoom).emit('set-track', { url: room.state.url });
+      }
       if (typeof cb === 'function') cb({ ok: true, count: added.length });
     } catch (e) {
       if (typeof cb === 'function') cb({ ok: false, message: 'error' });
@@ -992,7 +1034,7 @@ const apiServer = createServer(async (req, res) => {
           name: s.name,
           artists: (s.ar || s.artists || []).map ? (s.ar || s.artists).map((a) => a.name || a).join(', ') : (s.artists || '').toString(),
           album: (s.al && s.al.name) || (s.album && s.album.name) || '',
-          cover: (s.al && s.al.picUrl) || (s.album && s.album.picUrl) || null,
+          cover: normalizeCoverUrl((s.al && s.al.picUrl) || (s.album && s.album.picUrl) || null),
           src: `https://music.163.com/song/media/outer/url?id=${s.id}.mp3`
         }));
         const body = JSON.stringify({ ok: true, list });

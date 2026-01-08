@@ -69,7 +69,17 @@ export default function RoomPage() {
     return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
   }
 
+  function normalizeCoverUrl(input?: string | null) {
+    if (!input || typeof input !== 'string') return null;
+    const trimmed = input.trim();
+    if (!trimmed) return null;
+    if (trimmed.startsWith('//')) return `https:${trimmed}`;
+    if (trimmed.startsWith('http://')) return `https://${trimmed.slice(7)}`;
+    return trimmed;
+  }
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const currentCover = normalizeCoverUrl(currentTrack?.cover);
 
   useEffect(() => {
     let mounted = true;
@@ -429,7 +439,7 @@ export default function RoomPage() {
           const artists = formatArtists(song?.ar || song?.artists || []);
           const title = artists ? `${name} — ${artists}` : name || String(songId || '');
           const url = song?.url || (songId ? `https://music.163.com/song/media/outer/url?id=${songId}.mp3` : '');
-          const cover = song?.al?.picUrl || song?.album?.picUrl || song?.picUrl || null;
+          const cover = normalizeCoverUrl(song?.al?.picUrl || song?.album?.picUrl || song?.picUrl || null);
           if (!url) return null;
           return { url, title, cover };
         }).filter(Boolean);
@@ -732,9 +742,9 @@ export default function RoomPage() {
           <div className="space-y-5">
             <div className="flex flex-col gap-2 lg:flex-row lg:items-stretch lg:justify-evenly lg:gap-2">
               <div className="flex items-center lg:justify-center">
-                {currentTrack?.cover ? (
+                {currentCover ? (
                   <img
-                    src={currentTrack.cover}
+                    src={currentCover}
                     alt=""
                     className="h-40 w-40 rounded-2xl object-cover shadow-md"
                   />
@@ -936,7 +946,13 @@ export default function RoomPage() {
                           <button
                             disabled={!joined}
                             onClick={() => {
-                              if (socket && joined) socket.emit('playlist-add', { url: r.src, title: `${r.name} — ${r.artists}`, cover: r.cover || null });
+                              if (socket && joined) {
+                                socket.emit('playlist-add', {
+                                  url: r.src,
+                                  title: `${r.name} — ${r.artists}`,
+                                  cover: normalizeCoverUrl(r.cover),
+                                });
+                              }
                             }}
                             className="btn-outline"
                           >
