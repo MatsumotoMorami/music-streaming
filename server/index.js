@@ -94,10 +94,6 @@ function normalizeSongId(input) {
 
 const coverCache = new Map();
 const songUrlCache = new Map();
-let neteaseCookie = null;
-let neteaseLoginAt = 0;
-let neteaseLoginPromise = null;
-const NETEASE_LOGIN_TTL = 6 * 60 * 60 * 1000;
 const SONG_URL_TTL = 30 * 60 * 1000;
 const SONG_URL_CACHE_TTL = 10 * 60 * 1000;
 
@@ -143,40 +139,6 @@ async function fetchCoverById(id) {
   }
 }
 
-async function ensureNeteaseLogin() {
-  const phone = process.env.NETEASE_PHONE || '';
-  const password = process.env.NETEASE_PASSWORD || '';
-  const md5Password = process.env.NETEASE_MD5_PASSWORD || '';
-  const countrycode = process.env.NETEASE_COUNTRYCODE || '';
-  if (!phone || (!password && !md5Password)) return null;
-  const now = Date.now();
-  if (neteaseCookie && (now - neteaseLoginAt) < NETEASE_LOGIN_TTL) return neteaseCookie;
-  if (neteaseLoginPromise) return neteaseLoginPromise;
-  neteaseLoginPromise = (async () => {
-    try {
-      const mod = await import('NeteaseCloudMusicApi');
-      const loginCellphone = mod.login_cellphone || (mod.default && mod.default.login_cellphone);
-      if (!loginCellphone) return null;
-      const payload = {
-        phone,
-        ...(countrycode ? { countrycode } : {}),
-        ...(md5Password ? { md5_password: md5Password } : { password }),
-      };
-      const res = await loginCellphone(payload);
-      const cookies = Array.isArray(res?.cookie) ? res.cookie.join('; ') : res?.cookie;
-      if (!cookies) return neteaseCookie;
-      neteaseCookie = cookies;
-      neteaseLoginAt = Date.now();
-      return neteaseCookie;
-    } catch (_) {
-      return neteaseCookie;
-    } finally {
-      neteaseLoginPromise = null;
-    }
-  })();
-  return neteaseLoginPromise;
-}
-
 async function fetchSongUrlById(id) {
   const key = String(id || '');
   if (!key) return null;
@@ -184,22 +146,26 @@ async function fetchSongUrlById(id) {
   if (cached && (Date.now() - cached.ts) < SONG_URL_CACHE_TTL) return cached.url;
   if (cached) songUrlCache.delete(key);
   try {
-    const cookie = await ensureNeteaseLogin();
-    const mod = await import('NeteaseCloudMusicApi');
-    const apiSongUrlV1 = mod.song_url_v1 || (mod.default && mod.default.song_url_v1);
-    const apiSongUrl = mod.song_url || (mod.default && mod.default.song_url);
     let url = null;
-    if (apiSongUrlV1) {
-      const res = await apiSongUrlV1({ id: key, level: 'exhigh', ...(cookie ? { cookie } : {}) });
-      const body = res && res.body ? res.body : res;
-      const data = body && Array.isArray(body.data) ? body.data : [];
-      url = data[0] && data[0].url ? data[0].url : null;
+    const playUrl = `https://api.paugram.com/netease/?id=${encodeURIComponent(key)}&play=true`;
+    const res = await fetch(playUrl, { redirect: 'manual' });
+    if (res && res.status >= 300 && res.status < 400) {
+      url = res.headers.get('location');
+    } else if (res && res.ok) {
+      const text = await res.text();
+      try {
+        const data = JSON.parse(text);
+        url = data?.link || data?.url || null;
+      } catch (_) {
+        if (res.url && res.url !== playUrl) url = res.url;
+      }
     }
-    if (!url && apiSongUrl) {
-      const res = await apiSongUrl({ id: key, br: 320000, ...(cookie ? { cookie } : {}) });
-      const body = res && res.body ? res.body : res;
-      const data = body && Array.isArray(body.data) ? body.data : [];
-      url = data[0] && data[0].url ? data[0].url : null;
+    if (!url) {
+      const infoRes = await fetch(`https://api.paugram.com/netease/?id=${encodeURIComponent(key)}`);
+      if (infoRes && infoRes.ok) {
+        const data = await infoRes.json();
+        url = data?.link || data?.url || null;
+      }
     }
     const normalized = normalizeStreamUrl(url);
     if (normalized) songUrlCache.set(key, { url: normalized, ts: Date.now() });
