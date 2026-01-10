@@ -11,6 +11,7 @@ export default function Home() {
   const [createPassword, setCreatePassword] = useState('');
   const [joinPrompt, setJoinPrompt] = useState<{ open: boolean; roomId?: string }>({ open: false, roomId: undefined });
   const [joinPassword, setJoinPassword] = useState('');
+  const [joinPromptError, setJoinPromptError] = useState<string | null>(null);
   const [profileNickname, setProfileNickname] = useState<string | null>(null);
   const [profileEmail, setProfileEmail] = useState<string | null>(null);
   const [guestName] = useState(() => `Guest-${Math.random().toString(36).slice(2, 6)}`);
@@ -98,6 +99,7 @@ export default function Home() {
     const r = rooms.find((x) => x.id === rid) as any;
     if (r && r.visibility === 'private') {
       setJoinPrompt({ open: true, roomId: rid });
+      setJoinPromptError(null);
       return;
     }
     // try to join directly (public)
@@ -107,7 +109,10 @@ export default function Home() {
       s.emit('join-room', { roomId: rid, name: displayName, token }, (resp: any) => {
         if (resp && resp.ok) router.push(`/${rid}`);
         else {
-          if (resp && resp.code === 'password-required') setJoinPrompt({ open: true, roomId: rid });
+          if (resp && resp.code === 'password-required') {
+            setJoinPrompt({ open: true, roomId: rid });
+            setJoinPromptError(resp?.message || '此房间为私密房间，需要正确密码才能加入');
+          }
           else try { alert(resp?.message || '无法加入房间'); } catch (_) {}
         }
       });
@@ -129,9 +134,10 @@ export default function Home() {
         if (resp && resp.ok) {
           setJoinPrompt({ open: false });
           setJoinPassword('');
+          setJoinPromptError(null);
           router.push(`/${rid}`);
         } else {
-          try { alert(resp?.message || '密码错误'); } catch(_) {}
+          setJoinPromptError(resp?.message || '密码错误');
           try { sessionStorage.removeItem(`room_join:${rid}`); } catch (e) {}
         }
       });
@@ -255,8 +261,18 @@ export default function Home() {
               type="password"
               className="input-field"
             />
+            {joinPromptError && <p className="text-sm text-rose-200">{joinPromptError}</p>}
             <div className="flex flex-wrap gap-2 justify-end">
-              <button onClick={() => setJoinPrompt({ open: false })} className="btn-secondary">取消</button>
+              <button
+                onClick={() => {
+                  setJoinPrompt({ open: false });
+                  setJoinPromptError(null);
+                  setJoinPassword('');
+                }}
+                className="btn-secondary"
+              >
+                取消
+              </button>
               <button onClick={submitJoinPassword} className="btn-primary">提交并加入</button>
             </div>
           </div>

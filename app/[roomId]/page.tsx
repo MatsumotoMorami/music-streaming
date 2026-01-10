@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useParams } from "next/navigation";
 
+const PLAYLIST_PAGE_SIZE = 50;
+
 export default function RoomPage() {
   const params = useParams();
   const roomId = params?.roomId || "";
@@ -18,6 +20,7 @@ export default function RoomPage() {
   const [currentTime, setCurrentTime] = useState(0);
   const [playlist, setPlaylist] = useState<Array<any>>([]);
   const [playlistFilter, setPlaylistFilter] = useState('');
+  const [playlistPage, setPlaylistPage] = useState(1);
   const [newTrackUrl, setNewTrackUrl] = useState('');
   const [newTrackTitle, setNewTrackTitle] = useState('');
   const [playMode, setPlayMode] = useState<'single'|'sequence'|'loop'|'shuffle'>('sequence');
@@ -64,6 +67,12 @@ export default function RoomPage() {
         return title.includes(query) || url.includes(query);
       })
     : playlist;
+  const totalPages = Math.max(1, Math.ceil(filteredPlaylist.length / PLAYLIST_PAGE_SIZE));
+  const clampedPage = Math.min(Math.max(playlistPage, 1), totalPages);
+  const pagedPlaylist = filteredPlaylist.slice(
+    (clampedPage - 1) * PLAYLIST_PAGE_SIZE,
+    clampedPage * PLAYLIST_PAGE_SIZE
+  );
 
   function pushToast(message: string, tone: 'success' | 'error' = 'success') {
     const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -80,6 +89,23 @@ export default function RoomPage() {
       if (idx >= 0) return idx;
     }
     return playlist.indexOf(item);
+  }
+
+  function getPageItems(total: number, current: number) {
+    const items: Array<number | string> = [];
+    if (total <= 7) {
+      for (let i = 1; i <= total; i += 1) items.push(i);
+      return items;
+    }
+    items.push(1);
+    const windowSize = 2;
+    const start = Math.max(2, current - windowSize);
+    const end = Math.min(total - 1, current + windowSize);
+    if (start > 2) items.push('...');
+    for (let i = start; i <= end; i += 1) items.push(i);
+    if (end < total - 1) items.push('...');
+    items.push(total);
+    return items;
   }
 
   function getEmailFallback(email?: string | null) {
@@ -276,7 +302,13 @@ export default function RoomPage() {
       });
       // server may return join-error if account already in room
       s.on('join-error', (err: { code?: string; message?: string }) => {
-        try { alert(err?.message || '加入被拒绝'); } catch (_) {}
+        const message = err?.message || '加入被拒绝';
+        if (err?.code === 'password-required') {
+          setShowPasswordPrompt(true);
+        } else {
+          setShowPasswordPrompt(false);
+        }
+        setJoinError(message);
       });
 
       const attemptAutoJoin = async () => {
@@ -390,6 +422,14 @@ export default function RoomPage() {
     })();
     return () => { active = false; };
   }, [joined]);
+
+  useEffect(() => {
+    setPlaylistPage(1);
+  }, [playlistFilter]);
+
+  useEffect(() => {
+    if (playlistPage !== clampedPage) setPlaylistPage(clampedPage);
+  }, [playlistPage, clampedPage]);
 
   function joinRoom() {
     if (!socket || !roomId) return;
@@ -712,6 +752,40 @@ export default function RoomPage() {
     },
   };
 
+  const pageItems = getPageItems(totalPages, clampedPage);
+  const renderPagination = () => (
+    <div className="flex flex-wrap items-center gap-2">
+      <button
+        className="btn-outline"
+        disabled={clampedPage <= 1}
+        onClick={() => setPlaylistPage(Math.max(1, clampedPage - 1))}
+      >
+        上一页
+      </button>
+      {pageItems.map((item, idx) => (
+        item === '...'
+          ? <span key={`page-gap-${idx}`} className="px-2 text-sm text-slate-400">...</span>
+          : (
+            <button
+              key={`page-${item}`}
+              className={item === clampedPage ? 'btn-secondary' : 'btn-outline'}
+              onClick={() => setPlaylistPage(Number(item))}
+            >
+              {item}
+            </button>
+          )
+      ))}
+      <button
+        className="btn-outline"
+        disabled={clampedPage >= totalPages}
+        onClick={() => setPlaylistPage(Math.min(totalPages, clampedPage + 1))}
+      >
+        下一页
+      </button>
+      <span className="muted text-xs">共 {filteredPlaylist.length} 首</span>
+    </div>
+  );
+
   return (
     <div className="page-container space-y-6">
       <section className="hero-card">
@@ -838,29 +912,7 @@ export default function RoomPage() {
               </div>
             )}
 
-            {showPasswordPrompt ? (
-              <div className="space-y-2">
-                <label className="text-sm text-slate-300">此房间为私密房间，请输入密码</label>
-                <div className="flex flex-wrap gap-2">
-                  <input
-                    type="password"
-                    placeholder="房间密码"
-                    value={roomPassword}
-                    onChange={(e) => setRoomPassword(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
-                        e.preventDefault();
-                        if (!joining) joinRoom();
-                      }
-                    }}
-                    className="input-field flex-1"
-                  />
-                  <button onClick={joinRoom} className="btn-primary" disabled={joining}>提交密码并加入</button>
-                </div>
-              </div>
-            ) : null}
-
-            {joinError && <p className="text-sm text-rose-200">{joinError}</p>}
+            {joinError && !showPasswordPrompt && <p className="text-sm text-rose-200">{joinError}</p>}
             <p className="muted text-sm">加入后你会与房间的播放状态同步。</p>
           </div>
         ) : (
@@ -998,7 +1050,8 @@ export default function RoomPage() {
               <div className="space-y-2">
                 {playlist.length === 0 && <div className="muted text-sm">歌单为空</div>}
                 {playlist.length > 0 && filteredPlaylist.length === 0 && <div className="muted text-sm">未找到匹配歌曲</div>}
-                {filteredPlaylist.map((it, idx) => {
+                {filteredPlaylist.length > 0 && renderPagination()}
+                {pagedPlaylist.map((it, idx) => {
                   const realIndex = getPlaylistIndex(it);
                   return (
                     <div key={it.id || idx} className={`list-row ${currentIndex === realIndex ? 'ring-1 ring-emerald-400/40' : ''}`}>
@@ -1035,6 +1088,7 @@ export default function RoomPage() {
                     </div>
                   );
                 })}
+                {filteredPlaylist.length > 0 && renderPagination()}
               </div>
             </div>
 
@@ -1053,6 +1107,48 @@ export default function RoomPage() {
           </div>
         )}
       </div>
+
+      {showPasswordPrompt && (
+        <div className="fixed inset-0 flex items-center justify-center modal-backdrop px-4">
+          <div className="modal-card w-full max-w-md space-y-3" role="dialog" aria-modal="true">
+            <div className="flex items-center justify-between">
+              <div className="section-title">请输入房间密码</div>
+              <button
+                onClick={() => {
+                  setShowPasswordPrompt(false);
+                  setRoomPassword('');
+                  setJoinError(null);
+                }}
+                className="btn-secondary"
+              >
+                关闭
+              </button>
+            </div>
+            {joinError ? (
+              <p className="text-sm text-rose-200">{joinError}</p>
+            ) : (
+              <p className="text-sm text-slate-300">此房间为私密房间，请输入密码。</p>
+            )}
+            <input
+              type="password"
+              placeholder="房间密码"
+              value={roomPassword}
+              onChange={(e) => setRoomPassword(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  if (!joining) joinRoom();
+                }
+              }}
+              className="input-field"
+              autoFocus
+            />
+            <div className="flex flex-wrap justify-end">
+              <button onClick={joinRoom} className="btn-primary" disabled={joining}>提交密码并加入</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showAddModal && (
         <div className="fixed inset-0 flex items-center justify-center modal-backdrop px-4">
