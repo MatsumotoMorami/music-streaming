@@ -66,7 +66,6 @@ export default function ProfilePage() {
               const ctx = canvas.getContext('2d');
               if (!ctx) return resolve(null);
               ctx.drawImage(img, 0, 0, w, h);
-              // use jpeg to compress if original large
               const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
               resolve(dataUrl);
             } catch (e) {

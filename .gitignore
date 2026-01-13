@@ -43,3 +43,6 @@ prisma/dev.db
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+/大二上Java大作业
+/大二上Java理论课大作业
