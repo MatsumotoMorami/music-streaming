@@ -46,6 +46,38 @@ async function sendEmail({ to, subject, html, text }) {
 }
 
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-please-change';
+const NETEASE_PHONE = process.env.NETEASE_PHONE || '';
+const NETEASE_PASSWORD = process.env.NETEASE_PASSWORD || '';
+let neteaseCookieCache = process.env.NETEASE_COOKIE || '';
+let neteaseLoginPromise = null;
+
+async function getNeteaseCookie() {
+  if (neteaseCookieCache) return neteaseCookieCache;
+  if (!NETEASE_PHONE || !NETEASE_PASSWORD) return null;
+  if (neteaseLoginPromise) return neteaseLoginPromise;
+  neteaseLoginPromise = (async () => {
+    try {
+      const mod = await import('NeteaseCloudMusicApi');
+      const apiLogin = mod.login_cellphone || (mod.default && mod.default.login_cellphone);
+      if (!apiLogin) return null;
+      const res = await apiLogin({ phone: NETEASE_PHONE, password: NETEASE_PASSWORD });
+      const cookieValue = res && res.body && res.body.cookie ? res.body.cookie : null;
+      if (cookieValue) neteaseCookieCache = cookieValue;
+      return cookieValue;
+    } catch (e) {
+      console.error('[API] netease login error', e && e.message ? e.message : e);
+      return null;
+    } finally {
+      neteaseLoginPromise = null;
+    }
+  })();
+  return neteaseLoginPromise;
+}
+
+function attachNeteaseCookie(params, cookieValue) {
+  if (!cookieValue) return params;
+  return { ...params, cookie: cookieValue };
+}
 
 function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
@@ -127,7 +159,8 @@ async function fetchCoverById(id) {
     const mod = await import('NeteaseCloudMusicApi');
     const apiSongDetail = mod.song_detail || (mod.default && mod.default.song_detail);
     if (!apiSongDetail) return null;
-    const res = await apiSongDetail({ ids: key });
+    const neteaseCookie = await getNeteaseCookie();
+    const res = await apiSongDetail(attachNeteaseCookie({ ids: key }, neteaseCookie));
     const body = res && res.body ? res.body : res;
     const songs = body && Array.isArray(body.songs) ? body.songs : [];
     const song = songs.find((s) => String(s?.id || '') === key) || songs[0];
@@ -1231,7 +1264,8 @@ const apiServer = createServer(async (req, res) => {
         const mod = await import('NeteaseCloudMusicApi');
         const apiSearch = mod.search || (mod.default && mod.default.search);
         if (!apiSearch) { res.writeHead(500); return res.end('搜索服务不可用'); }
-        const apiRes = await apiSearch({ keywords: q });
+        const neteaseCookie = await getNeteaseCookie();
+        const apiRes = await apiSearch(attachNeteaseCookie({ keywords: q }, neteaseCookie));
         const songs = apiRes && apiRes.body && apiRes.body.result && apiRes.body.result.songs ? apiRes.body.result.songs : [];
         const list = songs.map((s) => ({
           id: s.id,
@@ -1273,7 +1307,8 @@ const apiServer = createServer(async (req, res) => {
       const apiSongDetail = mod.song_detail || (mod.default && mod.default.song_detail);
       if (!apiDetail || !apiSongDetail) { res.writeHead(500); return res.end('歌单详情不可用'); }
 
-      const detailRes = await apiDetail({ id, n: 100000, s });
+      const neteaseCookie = await getNeteaseCookie();
+      const detailRes = await apiDetail(attachNeteaseCookie({ id, n: 100000, s }, neteaseCookie));
       const trackIds = detailRes && detailRes.body && detailRes.body.playlist && Array.isArray(detailRes.body.playlist.trackIds)
         ? detailRes.body.playlist.trackIds
         : [];
@@ -1293,7 +1328,7 @@ const apiServer = createServer(async (req, res) => {
       const batchSize = 1000;
       for (let i = 0; i < slice.length; i += batchSize) {
         const chunk = slice.slice(i, i + batchSize);
-        const songRes = await apiSongDetail({ ids: chunk.join(',') });
+        const songRes = await apiSongDetail(attachNeteaseCookie({ ids: chunk.join(',') }, neteaseCookie));
         const body = songRes && songRes.body ? songRes.body : songRes;
         if (body && Array.isArray(body.songs)) songs.push(...body.songs);
         if (body && Array.isArray(body.privileges)) privileges.push(...body.privileges);
